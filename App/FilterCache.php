@@ -9,15 +9,23 @@ class FilterCache {
 
   private const FILE = 'filter-options.json';
 
-  public static function load(string $projectKey, string $boardId): array {
+  public static function load(string $projectKey): array {
     $cache = AppData::loadJson(self::FILE);
-    $key = self::key($projectKey, $boardId);
-    return self::normalize(is_array($cache[$key] ?? null) ? $cache[$key] : []);
+    if (is_array($cache[$projectKey] ?? null)) {
+      return self::normalize($cache[$projectKey]);
+    }
+    // Older caches included a board ID even though these choices are project scoped.
+    foreach ([$projectKey . '|', ...array_keys($cache)] as $key) {
+      if (str_starts_with((string)$key, $projectKey . '|') && is_array($cache[$key] ?? null) && !empty($cache[$key]['_loaded'])) {
+        return self::normalize($cache[$key]);
+      }
+    }
+    return self::normalize([]);
   }
 
-  public static function save(string $projectKey, string $boardId, array $options): bool {
+  public static function save(string $projectKey, array $options): bool {
     $cache = AppData::loadJson(self::FILE);
-    $cache[self::key($projectKey, $boardId)] = self::normalize($options);
+    $cache[$projectKey] = self::normalize($options);
     return AppData::saveJson(self::FILE, $cache);
   }
 
@@ -25,13 +33,10 @@ class FilterCache {
     return AppData::saveJson(self::FILE, []);
   }
 
-  private static function key(string $projectKey, string $boardId): string {
-    return trim($projectKey) . '|' . trim($boardId);
-  }
-
   private static function normalize(array $options): array {
     return [
       '_loaded' => !empty($options['_loaded']),
+      'priorityScope' => in_array($options['priorityScope'] ?? '', ['project', 'global'], true) ? $options['priorityScope'] : '',
       'assignee' => self::normalizeValues($options['assignee'] ?? []),
       'assigneeUsers' => self::normalizeUsers($options['assigneeUsers'] ?? []),
       'reporterUsers' => self::normalizeUsers($options['reporterUsers'] ?? []),

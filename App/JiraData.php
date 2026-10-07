@@ -79,6 +79,60 @@ class JiraData {
     return SprintCache::load($boardId);
   }
 
+  /** Load project-wide filter choices once, unless explicitly refreshed. */
+  public function filterOptions(string $projectKey, bool $refresh = false): array {
+    $scope = $projectKey === '' ? 'global' : 'project';
+    $cached = FilterCache::load($projectKey);
+    if (!$refresh && $cached['_loaded'] && $cached['priorityScope'] === $scope) {
+      return $cached;
+    }
+    $client = $this->client();
+    $statuses = [];
+    $types = [];
+    if ($projectKey === '') {
+      foreach ($client->statuses() as $status) {
+        $statuses[] = (string)($status['name'] ?? '');
+      }
+      foreach ($client->issueTypes() as $type) {
+        $types[] = (string)($type['name'] ?? '');
+      }
+    } else {
+      foreach ($client->projectStatuses($projectKey) as $type) {
+        $types[] = (string)($type['name'] ?? '');
+        foreach ($type['statuses'] ?? [] as $status) {
+          $statuses[] = (string)($status['name'] ?? '');
+        }
+      }
+      $project = $client->project($projectKey);
+      $projectId = (string)($project['id'] ?? '');
+      if ($projectId === '') {
+        throw new \RuntimeException('Jira did not return an ID for project ' . $projectKey . '.');
+      }
+    }
+    $priorities = [];
+    $start = 0;
+    do {
+      $page = $projectKey === '' ? $client->allPriorities($start) : $client->projectPriorities($projectId, $start);
+      foreach ($page['values'] ?? [] as $priority) {
+        $priorities[] = (string)($priority['name'] ?? '');
+      }
+      $loaded = count($page['values'] ?? []);
+      $start += $loaded;
+    } while ($loaded > 0 && empty($page['isLast']));
+    $users = $projectKey === '' ? $client->users() : $client->assignableUsers($projectKey);
+    $assignees = array_values(array_filter(array_map(fn(array $row): string => (string)($row['accountId'] ?? ''), $users)));
+    FilterCache::save($projectKey, [
+      '_loaded' => true,
+      'priorityScope' => $scope,
+      'status' => array_values(array_unique(array_filter($statuses))),
+      'type' => array_values(array_unique(array_filter($types))),
+      'priority' => array_values(array_unique(array_filter($priorities))),
+      'assignee' => $assignees,
+      'assigneeUsers' => $users,
+    ]);
+    return FilterCache::load($projectKey);
+  }
+
   /** Search the current JQL and preserve the result page for offline startup. */
   public function tickets(string $jql, bool $more = false): array {
     $cached = TicketCache::load();

@@ -1,57 +1,73 @@
 <Screen>
+  <Event type="keyDown" key="right" action="MAJIRA\App\Controller::focusExpandedFilterFromSaved" />
+  <Event type="keyDown" key="left" action="MAJIRA\App\Controller::focusExpandedFilterFromActions" />
+  <Event type="keyDown" key="enter" action="MAJIRA\App\Controller::addDateFilter" />
+  <Event type="keyUp" key="delete" action="MAJIRA\App\Controller::removeDateFilter" />
   <Layout>
-    <Title height="1">Ticket filters</Title>
-    <Separator />
     <Layout direction="horizontal" height="1*">
-      <Layout width="30">
-        <List id="projects" title="Projects" height="5" />
-        <Button label="Select project" action="MAJIRA\App\Controller::selectProject" />
-        <Button label="Reload projects" action="MAJIRA\App\Controller::reloadProjects" />
-        <Separator />
-        <List id="boards" title="Boards" height="5" />
-        <Button label="Select board" action="MAJIRA\App\Controller::selectBoard" />
-        <Button label="Reload boards" action="MAJIRA\App\Controller::reloadBoards" />
-        <Separator />
-        <List id="sprints" title="Sprints" height="5" />
-        <Button label="Select sprint" action="MAJIRA\App\Controller::selectSprint" />
-        <Button label="Reload sprints" action="MAJIRA\App\Controller::reloadSprints" />
-        <Empty height="1*" />
-      </Layout>
-      <Separator />
-      <Layout width="32">
-        <Input id="search" label="Search text" />
-        <Input id="updated" label="Updated since (YYYY-MM-DD)" />
-        <Input id="created" label="Created since (YYYY-MM-DD)" />
-        <Input id="custom-name" label="Filter name" />
-        <Button label="Save current JQL" action="MAJIRA\App\Controller::saveCustomFilter" />
-        <Button label="Clear filters" action="MAJIRA\App\Controller::clearFilters" />
-        <Button label="Load filter options" action="MAJIRA\App\Controller::loadFilterOptions" />
-        <Empty height="1*" />
-      </Layout>
-      <Separator />
-      <Layout width="20">
-        <List id="filter-groups" title="Filter" height="1*">
-          <Item value="status">Status</Item>
-          <Item value="type">Type</Item>
-          <Item value="priority">Priority</Item>
-          <Item value="assignee">Assignee</Item>
-          <Event type="change" action="MAJIRA\App\Controller::filterGroupChanged" />
-        </List>
-      </Layout>
-      <Separator />
-      <Layout width="1*">
-        <List id="filter-options" title="Values (Space to toggle)" multiple="true" height="1*" />
-        <Button label="Keep selected values" action="MAJIRA\App\Controller::saveFilterGroup" />
-      </Layout>
-      <Separator />
       <Layout width="24">
-        <List id="custom-filters" title="Saved JQL" height="1*" />
+        <List id="custom-filters" title="Saved filters" height="1*" />
+      </Layout>
+      <Separator />
+      <Layout id="filter-tiles" width="1*">
+        <Layout id="filter-project" height="1*"><List id="projects" title="Project" height="1*"><Event type="deactivate" action="MAJIRA\App\Controller::selectProject" /></List></Layout>
+        <Separator />
+        <Layout id="filter-board" height="1*"><List id="boards" title="Board" height="1*"><Event type="deactivate" action="MAJIRA\App\Controller::selectBoard" /></List></Layout>
+        <Separator />
+        <Layout id="filter-sprint" height="1*"><List id="sprints" title="Sprint" height="1*"><Event type="deactivate" action="MAJIRA\App\Controller::selectSprint" /></List></Layout>
+        <Separator />
+        <Layout id="filter-search" height="1*"><Input id="search" label="Search text" height="1*" /></Layout>
+        <Separator />
+        <Layout id="filter-updated" height="1*">
+          <Layout direction="horizontal" height="1*">
+            <Layout id="updated-from-slot" width="1*">
+              <DateSelector id="updated-date" title="From" height="1*"><Event type="change" action="MAJIRA\App\Controller::dateSelectionChanged" /></DateSelector>
+            </Layout>
+            <Separator />
+            <Layout id="updated-to-slot" width="1*">
+              <DateSelector id="updated-to-date" title="To" height="1*"><Event type="change" action="MAJIRA\App\Controller::dateSelectionChanged" /></DateSelector>
+            </Layout>
+          </Layout>
+        </Layout>
+        <Separator />
+        <Layout id="filter-created" height="1*">
+          <Layout direction="horizontal" height="1*">
+            <Layout id="created-from-slot" width="1*">
+              <DateSelector id="created-date" title="From" height="1*"><Event type="change" action="MAJIRA\App\Controller::dateSelectionChanged" /></DateSelector>
+            </Layout>
+            <Separator />
+            <Layout id="created-to-slot" width="1*">
+              <DateSelector id="created-to-date" title="To" height="1*"><Event type="change" action="MAJIRA\App\Controller::dateSelectionChanged" /></DateSelector>
+            </Layout>
+          </Layout>
+        </Layout>
+        <Separator />
+        <Layout id="filter-status" height="1*"><List id="status-options" title="Status" multiple="true" height="1*"><Event type="deactivate" action="MAJIRA\App\Controller::saveFilterGroup" /></List></Layout>
+        <Separator />
+        <Layout id="filter-type" height="1*"><List id="type-options" title="Type" multiple="true" height="1*"><Event type="deactivate" action="MAJIRA\App\Controller::saveFilterGroup" /></List></Layout>
+        <Separator />
+        <Layout id="filter-priority" height="1*"><List id="priority-options" title="Priority" multiple="true" height="1*"><Event type="deactivate" action="MAJIRA\App\Controller::saveFilterGroup" /></List></Layout>
+        <Separator />
+        <Layout id="filter-assignee" height="1*"><List id="assignee-options" title="Assignee" multiple="true" height="1*"><Event type="deactivate" action="MAJIRA\App\Controller::saveFilterGroup" /></List></Layout>
+      </Layout>
+      <Separator />
+      <Layout id="filter-actions" width="28">
+        <Input id="custom-name" label="Filter name" />
+        <Button label="Save and apply" action="MAJIRA\App\Controller::applyFilters" />
+        <Button label="Keep selected values" action="MAJIRA\App\Controller::saveFilterGroup" />
         <Button label="Use saved filter" action="MAJIRA\App\Controller::useCustomFilter" />
         <Button label="Delete saved filter" action="MAJIRA\App\Controller::deleteCustomFilter" />
+        <Button label="Save current JQL" action="MAJIRA\App\Controller::saveCustomFilter" />
+        <Separator />
+        <Button label="Reload projects" action="MAJIRA\App\Controller::reloadProjects" />
+        <Button label="Reload boards" action="MAJIRA\App\Controller::reloadBoards" />
+        <Button label="Reload sprints" action="MAJIRA\App\Controller::reloadSprints" />
+        <Button label="Load filter options" action="MAJIRA\App\Controller::loadFilterOptions" />
+        <Button label="Clear filters" action="MAJIRA\App\Controller::clearFilters" />
+        <Empty height="1*" />
       </Layout>
     </Layout>
     <Separator />
-    <Button label="Save and apply named filter" action="MAJIRA\App\Controller::applyFilters" />
     <StatusBar id="status" height="1" />
   </Layout>
 </Screen>

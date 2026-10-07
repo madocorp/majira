@@ -27,6 +27,28 @@ class Client {
     ]);
   }
 
+  /** Return one project's details, including its numeric Jira ID. */
+  public function project(string $projectKey): array {
+    return $this->request('GET', '/rest/api/3/project/' . rawurlencode($projectKey));
+  }
+
+  /** Return priorities available in one project. */
+  public function projectPriorities(string $projectId, int $startAt = 0, int $maxResults = 100): array {
+    return $this->request('GET', '/rest/api/3/priority/search', [
+      'projectId' => $projectId,
+      'startAt' => $startAt,
+      'maxResults' => $maxResults,
+    ]);
+  }
+
+  /** Return one page of Jira priorities across projects. */
+  public function allPriorities(int $startAt = 0, int $maxResults = 100): array {
+    return $this->request('GET', '/rest/api/3/priority/search', [
+      'startAt' => $startAt,
+      'maxResults' => $maxResults,
+    ]);
+  }
+
   /** Returns Jira Software boards, optionally scoped to a project. */
   public function boards(string $projectKey = '', int $startAt = 0, int $maxResults = 100): array {
     $params = [
@@ -47,9 +69,14 @@ class Client {
     ]);
   }
 
-  /** Returns Jira priorities. */
-  public function priorities(): array {
-    return $this->request('GET', '/rest/api/3/priority');
+  /** Return statuses used by active Jira workflows. */
+  public function statuses(): array {
+    return $this->request('GET', '/rest/api/3/status');
+  }
+
+  /** Return issue types visible to the authenticated user. */
+  public function issueTypes(): array {
+    return $this->request('GET', '/rest/api/3/issuetype');
   }
 
   /** Returns Jira field metadata, including custom field IDs. */

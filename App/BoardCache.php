@@ -9,6 +9,11 @@ class BoardCache {
 
   private const FILE = 'boards.json';
 
+  /** An empty fetched board list is still a cached result. */
+  public static function has(string $projectKey): bool {
+    return array_key_exists($projectKey, AppData::loadJson(self::FILE));
+  }
+
   public static function load(string $projectKey): array {
     $cache = AppData::loadJson(self::FILE);
     return self::normalize(is_array($cache[$projectKey] ?? null) ? $cache[$projectKey] : []);

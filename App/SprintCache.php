@@ -9,6 +9,11 @@ class SprintCache {
 
   private const FILE = 'sprints.json';
 
+  /** An empty fetched sprint list is still a cached result. */
+  public static function has(string $boardId): bool {
+    return array_key_exists($boardId, AppData::loadJson(self::FILE));
+  }
+
   public static function load(string $boardId): array {
     $cache = AppData::loadJson(self::FILE);
     return self::normalize(is_array($cache[$boardId] ?? null) ? $cache[$boardId] : []);
