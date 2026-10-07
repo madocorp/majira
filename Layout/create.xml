@@ -1,0 +1,24 @@
+<Screen>
+  <Layout>
+    <Title id="create-project" height="1">New ticket</Title>
+    <Separator />
+    <Layout direction="horizontal" height="1*">
+      <Layout width="28">
+        <List id="create-types" title="Issue type" height="1*" />
+        <Button label="Reload issue types" action="MAJIRA\App\Controller::reloadIssueTypes" />
+      </Layout>
+      <Separator />
+      <Layout width="1*">
+        <Input id="create-summary" label="Summary" />
+        <TextEditor id="create-description" label="Description" textWrap="true" height="1*" />
+        <Layout direction="horizontal" height="1">
+          <Button label="Create ticket" action="MAJIRA\App\Controller::createTicket" />
+          <Button label="Cancel" action="MAJIRA\App\Controller::showList" />
+          <Empty width="1*" />
+        </Layout>
+      </Layout>
+    </Layout>
+    <Separator />
+    <StatusBar id="status" height="1" />
+  </Layout>
+</Screen>
