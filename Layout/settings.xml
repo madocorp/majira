@@ -1,0 +1,24 @@
+<Screen>
+  <Layout>
+    <Title height="1">MaJira connection</Title>
+    <Separator />
+    <Layout direction="horizontal" height="1*">
+      <Layout width="48">
+        <Input id="jira-site" label="Jira site (https://example.atlassian.net)" />
+        <Input id="jira-email" label="Email" />
+        <Input id="jira-token" label="New API token (blank keeps saved token)" />
+        <Button label="Save connection" action="MAJIRA\App\Controller::saveSettings" />
+        <Button label="Test connection" action="MAJIRA\App\Controller::testConnection" />
+        <Button label="Clear caches" action="MAJIRA\App\Controller::clearCaches" />
+        <Button label="Quit" action="MAJIRA\App\Controller::quit" />
+        <Empty height="1*" />
+      </Layout>
+      <Separator />
+      <Layout width="1*">
+        <Image src="../Assets/majira.png" fit="contain" interactive="false" height="1*" />
+        <Text height="5">Browse cached Jira tickets, then refresh when you want new data. Select a project, board and sprint on the Filters screen. The status bar shows active Jira requests.</Text>
+      </Layout>
+    </Layout>
+    <StatusBar id="status" height="1" />
+  </Layout>
+</Screen>

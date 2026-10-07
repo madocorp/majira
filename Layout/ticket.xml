@@ -1,0 +1,34 @@
+<Screen>
+  <Layout>
+    <Layout direction="horizontal" height="1">
+      <Title id="ticket-key" width="17">Ticket</Title>
+      <Input id="ticket-summary" width="1*" />
+      <Button label="Save summary" action="MAJIRA\App\Controller::saveSummary" />
+      <Button label="Refresh ticket" action="MAJIRA\App\Controller::refreshTicket" />
+    </Layout>
+    <Separator />
+    <Layout direction="horizontal" height="1*">
+      <Layout width="3*">
+        <TextEditor id="ticket-description" label="Description" height="3*" textWrap="true" />
+        <Button label="Save description" action="MAJIRA\App\Controller::saveDescription" />
+        <Separator />
+        <Text id="ticket-comments" height="2*" />
+        <Separator />
+        <Text id="ticket-attachments" height="1*" />
+      </Layout>
+      <Separator />
+      <Layout width="1*">
+        <Text id="ticket-properties" height="1*" />
+        <TextEditor id="new-comment" label="New comment" height="8" textWrap="true" />
+        <Button label="Add comment" action="MAJIRA\App\Controller::addComment" />
+        <Separator />
+        <Input id="open-key" label="Open ticket key" />
+        <Button label="Open key" action="MAJIRA\App\Controller::openKey" />
+        <Button label="New ticket" action="MAJIRA\App\Controller::newTicket" />
+        <Button label="Back to list" action="MAJIRA\App\Controller::showList" />
+      </Layout>
+    </Layout>
+    <Separator />
+    <StatusBar id="status" height="1" />
+  </Layout>
+</Screen>

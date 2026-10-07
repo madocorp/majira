@@ -1,0 +1,28 @@
+<Screen>
+  <Event type="keyDown" key="f5" action="MAJIRA\App\Controller::refreshTickets" />
+  <Event type="keyDown" key="f6" action="MAJIRA\App\Controller::moreTickets" />
+  <Event type="keyDown" key="m" action="MAJIRA\App\Controller::moreTickets" />
+  <Event type="keyUp" key="f" action="MAJIRA\App\Controller::filterShortcut" />
+  <Layout>
+    <Layout direction="horizontal" height="1">
+      <Input id="jql" width="1*">
+        <Event type="deactivate" action="MAJIRA\App\Controller::applyJql" />
+      </Input>
+      <Button label="Filters" hotkey="f" action="MAJIRA\App\Controller::toggleFilterSidebar" />
+    </Layout>
+    <Separator />
+    <Layout id="list-body" direction="horizontal" height="1*">
+      <Table id="tickets" rowNumbers="true" width="4*">
+        <Header><Field>Key</Field><Field>Summary</Field><Field>Status</Field><Field>Assignee</Field></Header>
+        <Event type="accept" action="MAJIRA\App\Controller::openSelectedTicket" />
+      </Table>
+      <Separator />
+      <List id="sidebar-filters" title="Filters" width="1*">
+        <Event type="keyDown" key="enter" action="MAJIRA\App\Controller::selectSidebarFilter" />
+        <Event type="deactivate" action="MAJIRA\App\Controller::finishSidebarFilter" />
+      </List>
+    </Layout>
+    <Separator />
+    <StatusBar id="status" height="1" />
+  </Layout>
+</Screen>
