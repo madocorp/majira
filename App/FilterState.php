@@ -33,8 +33,27 @@ class FilterState {
     foreach (['assignee', 'status', 'type', 'priority'] as $group) {
       $normalized[$group] = self::stringList($filters[$group] ?? []);
     }
-    foreach (['updated', 'created', 'customJql', 'lastJql', 'selectedCustomFilter'] as $key) {
+    foreach (['customJql', 'lastJql', 'selectedCustomFilter'] as $key) {
       $normalized[$key] = trim((string)($filters[$key] ?? ''));
+    }
+    foreach (['updated', 'created'] as $field) {
+      $date = trim((string)($filters[$field] ?? ''));
+      $to = trim((string)($filters[$field . 'To'] ?? ''));
+      $normalized[$field] = self::validDate($date) ? $date : '';
+      $normalized[$field . 'To'] = self::validDate($to) ? $to : '';
+      // Migrate date modes from the previous filter layout to optional bounds.
+      switch ($filters[$field . 'Mode'] ?? null) {
+        case 'any':
+          $normalized[$field] = $normalized[$field . 'To'] = '';
+          break;
+        case 'since':
+          $normalized[$field . 'To'] = '';
+          break;
+        case 'until':
+          $normalized[$field . 'To'] = $normalized[$field];
+          $normalized[$field] = '';
+          break;
+      }
     }
     if (!array_key_exists('lastJql', $filters)) {
       $normalized['lastJql'] = $normalized['customJql'];
@@ -62,7 +81,9 @@ class FilterState {
       'type' => [],
       'priority' => [],
       'updated' => '',
+      'updatedTo' => '',
       'created' => '',
+      'createdTo' => '',
       'search' => self::defaultSearch(),
       'orderBy' => [],
       'customJql' => '',
@@ -70,6 +91,13 @@ class FilterState {
       'customFilters' => [],
       'selectedCustomFilter' => '',
     ];
+  }
+
+  /** Check an ISO calendar date before it enters a DateSelector or JQL. */
+  public static function validDate(string $date): bool {
+    return preg_match('/^([0-9]{4})-([0-9]{2})-([0-9]{2})$/D', $date, $parts) === 1
+      && (int)$parts[1] >= 1
+      && checkdate((int)$parts[2], (int)$parts[3], (int)$parts[1]);
   }
 
   public static function defaultSearch(): array {

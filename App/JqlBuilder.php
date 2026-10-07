@@ -81,8 +81,16 @@ class JqlBuilder {
       $clauses[] = $this->assigneeJql($filters['assignee']);
     }
     foreach (['updated' => 'updated', 'created' => 'created'] as $group => $field) {
-      if ((string)$filters[$group] !== '') {
-        $clauses[] = $field . ' >= ' . (string)$filters[$group];
+      $from = (string)$filters[$group];
+      $to = (string)$filters[$group . 'To'];
+      if ($from !== '') {
+        $clauses[] = $field . ' >= ' . $this->jqlString($from);
+      }
+      if ($to !== '') {
+        $nextDay = (new \DateTimeImmutable($to, new \DateTimeZone('UTC')))->modify('+1 day')->format('Y-m-d');
+        $clauses[] = $nextDay === '10000-01-01'
+          ? $field . ' <= "9999-12-31 23:59"'
+          : $field . ' < ' . $this->jqlString($nextDay);
       }
     }
     $text = $this->textSearchJql($filters['search']);

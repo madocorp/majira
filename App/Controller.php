@@ -6,7 +6,9 @@ use MAJIRA\Jira\Adf;
 use SPTK\App;
 use SPTK\Core\Window;
 use SPTK\Events\EventContext;
+use SPTK\Events\EventDefinition;
 use SPTK\Layout\{LayoutLeaf, LayoutNode};
+use SPTK\Widgets\DateSelector\DateSelector;
 use SPTK\Widgets\Input\Input;
 use SPTK\Widgets\List\ListView;
 use SPTK\Widgets\Table\Table;
@@ -31,12 +33,19 @@ class Controller {
   private static ?LayoutNode $listSidebar = null;
   private static bool $sidebarOpen = false;
   private static ?string $sidebarSelection = null;
+  private const FILTER_TILES = ['project', 'board', 'sprint', 'search', 'updated', 'created', 'status', 'type', 'priority', 'assignee'];
+  private static array $filterExpanded = [];
+  private static array $filterCompact = [];
+  private static array $filterWidgets = [];
+  private static array $dateSlots = [];
+  private static string $activeFilterTile = 'project';
 
   /** Restore cached data after the window opens. */
   public static function initialize(EventContext $event): void {
     self::$window = array_values(App::eventLoop()->windows())[0];
     self::$data = new JiraData();
     self::prepareListSidebar();
+    self::prepareFilterTiles();
     $cached = TicketCache::load();
     self::$issues = is_array($cached['issues'] ?? null) ? $cached['issues'] : [];
     self::$meta = is_array($cached['meta'] ?? null) ? $cached['meta'] : [];
@@ -49,6 +58,12 @@ class Controller {
     self::renderTickets();
     self::renderFilters();
     self::status(Settings::isConfigured() ? 'Cached Jira data ready. Refresh for new results.' : 'Set Jira connection in Settings.');
+    if (Settings::isConfigured()) {
+      if (ProjectCache::load() === []) {
+        self::reloadProjects($event);
+      }
+      self::loadMissingNavigationChoices();
+    }
     if (Settings::isConfigured() && !empty(self::$meta['hasMore'])) {
       self::reportTicketCount();
     }
@@ -267,7 +282,7 @@ class Controller {
   /** Select a project and reset its dependent board and sprint. */
   public static function selectProject(EventContext $event): void {
     $value = self::list('filters', 'projects')->getValue();
-    if (!is_string($value) || $value === '') {
+    if (!is_string($value)) {
       return;
     }
     $settings = Settings::load();
@@ -278,8 +293,11 @@ class Controller {
       Settings::save($settings);
     }
     self::renderNavigation();
+    self::renderFilterOptions();
     self::input('list', 'jql')->setValue((new JqlBuilder())->current());
-    self::status('Project: ' . $value);
+    self::status('Project: ' . ($value === '' ? 'Any project' : $value));
+    self::refreshFilterSummaries();
+    self::loadMissingNavigationChoices(true);
   }
 
   /** Select a board and reset its sprint. */
@@ -293,8 +311,11 @@ class Controller {
     $settings['sprintId'] = '';
     Settings::save($settings);
     self::renderNavigation();
+    self::renderFilterOptions();
     self::input('list', 'jql')->setValue((new JqlBuilder())->current());
-    self::status('Board for sprint choices: ' . ($value ?: 'All'));
+    self::status('Board for sprint choices: ' . ($value ?: 'None selected'));
+    self::refreshFilterSummaries();
+    self::loadMissingNavigationChoices();
   }
 
   /** Select a sprint. */
@@ -308,7 +329,8 @@ class Controller {
     Settings::save($settings);
     self::renderNavigation();
     self::input('list', 'jql')->setValue((new JqlBuilder())->current());
-    self::status('Sprint: ' . ($value ?: 'All'));
+    self::status('Sprint: ' . ($value ?: 'Any sprint'));
+    self::refreshFilterSummaries();
   }
 
   /** Refresh the project cache from Jira. */
@@ -319,14 +341,10 @@ class Controller {
     });
   }
 
-  /** Refresh boards for the selected project. */
+  /** Refresh boards for the selected project, or across projects. */
   public static function reloadBoards(EventContext $event): void {
     $key = (string)(Settings::load()['projectKey'] ?? '');
-    if ($key === '') {
-      self::status('Select a project first.', true);
-      return;
-    }
-    self::request('GET boards for ' . $key, function() use ($key): void {
+    self::request('GET boards for ' . ($key === '' ? 'all projects' : $key), function() use ($key): void {
       self::$data->boards($key);
       self::renderNavigation();
     });
@@ -343,6 +361,33 @@ class Controller {
       self::$data->sprints($id);
       self::renderNavigation();
     });
+  }
+
+  /** Fetch newly selected board and sprint lists once, including empty results. */
+  private static function loadMissingNavigationChoices(bool $includeAnyProject = false): void {
+    $settings = Settings::load();
+    $project = (string)($settings['projectKey'] ?? '');
+    if (($project !== '' || $includeAnyProject) && !BoardCache::has($project)) {
+      self::request('GET boards for ' . ($project === '' ? 'any project' : $project), function() use ($project): void {
+        self::$data->boards($project);
+        self::renderNavigation();
+      });
+    }
+    $board = (string)($settings['boardId'] ?? '');
+    if ($board !== '' && !SprintCache::has($board)) {
+      self::request('GET sprints for board ' . $board, function() use ($board): void {
+        self::$data->sprints($board);
+        self::renderNavigation();
+      });
+    }
+    $filterCache = FilterCache::load($project);
+    $scope = $project === '' ? 'global' : 'project';
+    if ((!$filterCache['_loaded'] || $filterCache['priorityScope'] !== $scope)) {
+      self::request('GET filter options for ' . ($project === '' ? 'any project' : $project), function() use ($project): void {
+        self::$data->filterOptions($project);
+        self::renderFilterOptions();
+      });
+    }
   }
 
   /** Save connection settings and clear data belonging to the old account. */
@@ -380,6 +425,9 @@ class Controller {
       self::input('list', 'jql')->setValue((new JqlBuilder())->current());
     }
     self::status('Jira connection saved.');
+    if ($changed) {
+      self::reloadProjects($event);
+    }
   }
 
   /** Test the saved Jira connection. */
@@ -405,53 +453,28 @@ class Controller {
     App::eventLoop()->stop();
   }
 
-  /** Update the options list after the selected group changes. */
-  public static function filterGroupChanged(EventContext $event): void {
-    self::renderFilterOptions();
-  }
-
   /** Persist selected values for one filter group. */
   public static function saveFilterGroup(EventContext $event): void {
-    $group = self::list('filters', 'filter-groups')->getValue();
-    if (!is_string($group) || !in_array($group, ['status', 'type', 'priority', 'assignee'], true)) {
+    $id = $event->widget?->id() ?? '';
+    $group = str_ends_with($id, '-options') ? substr($id, 0, -strlen('-options')) : self::$activeFilterTile;
+    if (!in_array($group, ['status', 'type', 'priority', 'assignee'], true)) {
+      self::status('Select a choice filter first.', true);
       return;
     }
     $filters = FilterState::load();
-    $filters[$group] = self::list('filters', 'filter-options')->getValue();
+    $filters[$group] = self::list('filters', $group . '-options')->getValue();
     $filters['customJql'] = '';
     $filters['selectedCustomFilter'] = '';
     FilterState::save($filters);
+    self::refreshFilterSummaries();
     self::status(ucfirst($group) . ' filter saved.');
   }
 
-  /** Load project filter choices into the existing cache. */
+  /** Refresh project filter choices even when already cached. */
   public static function loadFilterOptions(EventContext $event): void {
     $project = (string)(Settings::load()['projectKey'] ?? '');
-    if ($project === '') {
-      self::status('Select a project first.', true);
-      return;
-    }
-    self::request('GET filter options for ' . $project, function() use ($project): void {
-      $client = self::$data->client();
-      $statuses = [];
-      $types = [];
-      foreach ($client->projectStatuses($project) as $type) {
-        $types[] = (string)($type['name'] ?? '');
-        foreach ($type['statuses'] ?? [] as $status) {
-          $statuses[] = (string)($status['name'] ?? '');
-        }
-      }
-      $priorities = array_map(fn(array $row): string => (string)($row['name'] ?? ''), $client->priorities());
-      $users = $client->assignableUsers($project);
-      $assignees = array_values(array_filter(array_map(fn(array $row): string => (string)($row['accountId'] ?? ''), $users)));
-      FilterCache::save($project, (string)(Settings::load()['boardId'] ?? ''), [
-        '_loaded' => true,
-        'status' => array_values(array_unique(array_filter($statuses))),
-        'type' => array_values(array_unique(array_filter($types))),
-        'priority' => array_values(array_unique(array_filter($priorities))),
-        'assignee' => $assignees,
-        'assigneeUsers' => $users,
-      ]);
+    self::request('GET filter options for ' . ($project === '' ? 'any project' : $project), function() use ($project): void {
+      self::$data->filterOptions($project, true);
       self::renderFilterOptions();
     });
   }
@@ -465,8 +488,19 @@ class Controller {
     }
     $filters = FilterState::load();
     $filters['search']['text'] = trim(self::input('filters', 'search')->getValue());
-    $filters['updated'] = trim(self::input('filters', 'updated')->getValue());
-    $filters['created'] = trim(self::input('filters', 'created')->getValue());
+    foreach (['updated', 'created'] as $field) {
+      $from = self::$dateSlots[$field]['from']['enabled'] ? self::date('filters', $field . '-date')->getValue() : '';
+      $to = self::$dateSlots[$field]['to']['enabled'] ? self::date('filters', $field . '-to-date')->getValue() : '';
+      if ($from !== '' && $to !== '' && $from > $to) {
+        self::status(ucfirst($field) . ': From must be on or before Through.', true);
+        return;
+      }
+      $filters[$field] = $from;
+      $filters[$field . 'To'] = $to;
+    }
+    foreach (['status', 'type', 'priority', 'assignee'] as $group) {
+      $filters[$group] = self::list('filters', $group . '-options')->getValue();
+    }
     $jql = (new JqlBuilder())->generatedFor($filters);
     if ($jql === '') {
       self::status('Set at least one filter before saving it.', true);
@@ -685,17 +719,20 @@ class Controller {
     $project = (string)($settings['projectKey'] ?? '');
     $board = (string)($settings['boardId'] ?? '');
     $sprint = (string)($settings['sprintId'] ?? '');
-    $projects = array_map(fn(array $row): array => ['value' => $row['key'], 'label' => $row['key'] . '  ' . $row['name']], ProjectCache::load());
+    $projects = [['value' => '', 'label' => 'Any project']];
+    foreach (ProjectCache::load() as $row) {
+      $projects[] = ['value' => $row['key'], 'label' => $row['key'] . '  ' . $row['name']];
+    }
     self::list('filters', 'projects')->setItems($projects);
     self::selectKnown('filters', 'projects', $project);
-    $boards = [['value' => '', 'label' => 'All boards']];
+    $boards = [['value' => '', 'label' => 'No board selected']];
     foreach (BoardCache::load($project) as $row) {
       $boards[] = ['value' => $row['id'], 'label' => $row['name']];
     }
     self::list('filters', 'boards')->setItems($boards);
     self::selectKnown('filters', 'boards', $board);
     $sprints = [
-      ['value' => '', 'label' => 'All sprints'],
+      ['value' => '', 'label' => 'Any sprint'],
       ['value' => JqlBuilder::NO_SPRINTS, 'label' => 'No sprint'],
     ];
     foreach (SprintCache::load($board) as $row) {
@@ -703,6 +740,7 @@ class Controller {
     }
     self::list('filters', 'sprints')->setItems($sprints);
     self::selectKnown('filters', 'sprints', $sprint);
+    self::refreshFilterSummaries();
   }
 
   /** Restore one known list selection. */
@@ -756,43 +794,253 @@ class Controller {
   private static function renderFilters(): void {
     $filters = FilterState::load();
     self::input('filters', 'search')->setValue($filters['search']['text']);
-    self::input('filters', 'updated')->setValue($filters['updated']);
-    self::input('filters', 'created')->setValue($filters['created']);
+    foreach (['updated', 'created'] as $field) {
+      self::date('filters', $field . '-date')->setValue($filters[$field] ?: date('Y-m-d'));
+      self::date('filters', $field . '-to-date')->setValue($filters[$field . 'To'] ?: self::date('filters', $field . '-date')->getValue());
+      self::showDateSlot($field, 'from', $filters[$field] !== '');
+      self::showDateSlot($field, 'to', $filters[$field . 'To'] !== '');
+    }
     self::renderFilterOptions();
     self::renderCustomFilters();
+    self::refreshFilterSummaries();
   }
 
-  /** Show available choices for the highlighted filter group. */
-  private static function renderFilterOptions(): void {
-    $group = self::list('filters', 'filter-groups')->getValue();
-    if (!is_string($group) || $group === '') {
+  /** Keep one full-height filter tile and two-line summaries for the others. */
+  private static function prepareFilterTiles(): void {
+    $screen = self::$window->screen('filters');
+    $column = $screen->layout->findNode('filter-tiles');
+    if ($column === null) {
+      throw new \LogicException('Filter tile column is missing.');
+    }
+    foreach (self::FILTER_TILES as $key) {
+      $node = $column->findNode('filter-' . $key);
+      if ($node === null) {
+        throw new \LogicException('Filter tile is missing: ' . $key);
+      }
+      self::$filterExpanded[$key] = $node;
+      foreach ($node->leaves() as $leaf) {
+        $id = $leaf->instance()->id();
+        if ($id !== null) {
+          self::$filterWidgets[$id] = $leaf->instance();
+        }
+      }
+      $summary = new FilterSummary(ucfirst($key));
+      $summary->setId('filter-summary-' . $key);
+      $compact = new LayoutLeaf('FilterSummary', '1*', '2', $summary, [
+        new EventDefinition('select', null, self::class . '::expandFilterTile'),
+      ]);
+      self::$filterCompact[$key] = $compact;
+      if ($key !== self::$activeFilterTile) {
+        $column->replaceChild($node, $compact);
+      }
+    }
+    foreach (['updated', 'created'] as $field) {
+      foreach (['from' => $field . '-date', 'to' => $field . '-to-date'] as $bound => $id) {
+        $slot = self::$filterExpanded[$field]->findNode($field . '-' . $bound . '-slot');
+        $date = $slot->leaves()[0];
+        $placeholder = new FilterSummary(ucfirst($bound));
+        $placeholder->setId('date-placeholder-' . $field . '-' . $bound);
+        $placeholder->setValue('Enter to add date');
+        $empty = new LayoutLeaf('FilterSummary', '1*', '1*', $placeholder);
+        $slot->replaceChild($date, $empty);
+        self::$dateSlots[$field][$bound] = ['slot' => $slot, 'date' => $date, 'empty' => $empty, 'enabled' => false];
+      }
+    }
+    $screen->setLayout($screen->layout);
+    self::$window->refreshLayout();
+    self::refreshFilterSummaries();
+  }
+
+  /** Enter on an empty date slot adds its calendar. */
+  public static function addDateFilter(EventContext $event): bool {
+    foreach (self::$dateSlots as $field => $bounds) {
+      foreach ($bounds as $bound => $slot) {
+        if ($event->widget === $slot['empty']->instance() && !$slot['enabled']) {
+          $id = $field . ($bound === 'to' ? '-to-date' : '-date');
+          self::date('filters', $id)->setValue(date('Y-m-d'));
+          self::showDateSlot($field, $bound, true, true);
+          self::refreshFilterSummaries();
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Delete on a date calendar returns its slot to the empty state. */
+  public static function removeDateFilter(EventContext $event): bool {
+    foreach (self::$dateSlots as $field => $bounds) {
+      foreach ($bounds as $bound => $slot) {
+        if ($event->widget === $slot['date']->instance() && $slot['enabled']) {
+          self::$window->screen('filters')->release('cancel');
+          self::showDateSlot($field, $bound, false, true);
+          self::refreshFilterSummaries();
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Refresh the collapsed date summary after a calendar choice. */
+  public static function dateSelectionChanged(EventContext $event): void {
+    self::refreshFilterSummaries();
+  }
+
+  private static function showDateSlot(string $field, string $bound, bool $enabled, bool $focus = false): void {
+    $slot = &self::$dateSlots[$field][$bound];
+    if ($slot['enabled'] === $enabled) {
+      return;
+    }
+    $previous = $slot[$slot['enabled'] ? 'date' : 'empty'];
+    $next = $slot[$enabled ? 'date' : 'empty'];
+    $slot['slot']->replaceChild($previous, $next);
+    $slot['enabled'] = $enabled;
+    if (self::$activeFilterTile === $field) {
+      $screen = self::$window->screen('filters');
+      $screen->setLayout($screen->layout);
+      if ($focus) {
+        if ($enabled) {
+          $screen->activateLeaf($next);
+        } else {
+          $screen->selectLeaf($next);
+        }
+      }
+      self::$window->refreshLayout();
+    }
+  }
+
+  /** Expand the summary reached with an arrow key. */
+  public static function expandFilterTile(EventContext $event): void {
+    $id = $event->widget?->id() ?? '';
+    $key = str_starts_with($id, 'filter-summary-') ? substr($id, strlen('filter-summary-')) : '';
+    if (!isset(self::$filterExpanded[$key]) || $key === self::$activeFilterTile) {
+      return;
+    }
+    $previous = self::$activeFilterTile;
+    $screen = self::$window->screen('filters');
+    $column = $screen->layout->findNode('filter-tiles');
+    $column->replaceChild(self::$filterExpanded[$previous], self::$filterCompact[$previous]);
+    $column->replaceChild(self::$filterCompact[$key], self::$filterExpanded[$key]);
+    self::$activeFilterTile = $key;
+    $screen->setLayout($screen->layout);
+    $screen->selectLeaf(self::$filterExpanded[$key]->leaves()[0]);
+    self::$window->refreshLayout();
+    self::refreshFilterSummaries();
+  }
+
+  /** Right from saved filters enters the currently open filter tile. */
+  public static function focusExpandedFilterFromSaved(EventContext $event): bool {
+    if ($event->widget !== self::list('filters', 'custom-filters')) {
+      return false;
+    }
+    return self::focusExpandedFilter();
+  }
+
+  /** Left from the action column enters the currently open filter tile. */
+  public static function focusExpandedFilterFromActions(EventContext $event): bool {
+    $screen = self::$window->screen('filters');
+    $actions = $screen->layout->findNode('filter-actions');
+    foreach ($actions?->leaves() ?? [] as $leaf) {
+      if ($leaf === $screen->selectedLeaf()) {
+        return self::focusExpandedFilter();
+      }
+    }
+    return false;
+  }
+
+  /** Select the expanded widget while leaving it ready for Return. */
+  private static function focusExpandedFilter(): bool {
+    $screen = self::$window->screen('filters');
+    $screen->selectLeaf(self::$filterExpanded[self::$activeFilterTile]->leaves()[0]);
+    return true;
+  }
+
+  /** Show each filter's current choice beneath its name while collapsed. */
+  private static function refreshFilterSummaries(): void {
+    if (self::$filterCompact === []) {
       return;
     }
     $settings = Settings::load();
-    $cached = FilterCache::load((string)($settings['projectKey'] ?? ''), (string)($settings['boardId'] ?? ''));
-    $selected = FilterState::load()[$group] ?? [];
-    $values = array_unique(array_merge($cached[$group] ?? [], $selected));
-    if ($group === 'assignee') {
-      $values = array_unique(array_merge([JqlBuilder::ASSIGNEE_ME, JqlBuilder::ASSIGNEE_UNASSIGNED], $values));
-    }
-    $items = [];
-    foreach ($values as $value) {
-      $label = $value;
-      if ($value === JqlBuilder::ASSIGNEE_ME) {
-        $label = 'Current user';
-      } else if ($value === JqlBuilder::ASSIGNEE_UNASSIGNED) {
-        $label = 'Unassigned';
-      } else if ($group === 'assignee') {
-        foreach ($cached['assigneeUsers'] ?? [] as $user) {
-          if ($user['accountId'] === $value) {
-            $label = $user['displayName'];
-            break;
-          }
+    $values = [
+      'project' => (string)($settings['projectKey'] ?? ''),
+      'board' => self::selectedFilterLabel('boards', (string)($settings['boardId'] ?? '')),
+      'sprint' => self::selectedFilterLabel('sprints', (string)($settings['sprintId'] ?? '')),
+      'search' => self::input('filters', 'search')->getValue(),
+      'updated' => self::dateSummary('updated'),
+      'created' => self::dateSummary('created'),
+    ];
+    foreach (['status', 'type', 'priority', 'assignee'] as $group) {
+      $labels = [];
+      foreach (self::list('filters', $group . '-options')->items() as $item) {
+        if ($item['selected']) {
+          $labels[] = $item['label'];
         }
       }
-      $items[] = ['value' => $value, 'label' => $label, 'selected' => in_array($value, $selected, true)];
+      $values[$group] = implode(', ', $labels);
     }
-    self::list('filters', 'filter-options')->setItems($items);
+    foreach (self::FILTER_TILES as $key) {
+      $value = trim((string)($values[$key] ?? ''));
+      self::$filterCompact[$key]->instance()->setValue($value !== '' ? $value : '-');
+    }
+  }
+
+  private static function dateSummary(string $field): string {
+    $from = self::$dateSlots[$field]['from']['enabled'] ? self::date('filters', $field . '-date')->getValue() : '';
+    $to = self::$dateSlots[$field]['to']['enabled'] ? self::date('filters', $field . '-to-date')->getValue() : '';
+    if ($from !== '' && $to !== '') {
+      return $from . ' – ' . $to;
+    }
+    return $from !== '' ? 'From ' . $from : ($to !== '' ? 'To ' . $to : '');
+  }
+
+  /** Use the visible choice name in collapsed board and sprint summaries. */
+  private static function selectedFilterLabel(string $id, string $value): string {
+    if ($value === '') {
+      return '';
+    }
+    foreach (self::list('filters', $id)->items() as $item) {
+      if ($item['value'] === $value) {
+        return $item['label'];
+      }
+    }
+    return $value;
+  }
+
+  /** Show cached choices in each filter tile. */
+  private static function renderFilterOptions(): void {
+    $settings = Settings::load();
+    $project = (string)($settings['projectKey'] ?? '');
+    $cached = FilterCache::load($project);
+    $scope = $project === '' ? 'global' : 'project';
+    $filters = FilterState::load();
+    foreach (['status', 'type', 'priority', 'assignee'] as $group) {
+      $selected = $filters[$group];
+      $available = $group === 'priority' && $cached['priorityScope'] !== $scope ? [] : ($cached[$group] ?? []);
+      $values = array_unique(array_merge($available, $selected));
+      if ($group === 'assignee') {
+        $values = array_unique(array_merge([JqlBuilder::ASSIGNEE_ME, JqlBuilder::ASSIGNEE_UNASSIGNED], $values));
+      }
+      $items = [];
+      foreach ($values as $value) {
+        $label = $value;
+        if ($value === JqlBuilder::ASSIGNEE_ME) {
+          $label = 'Current user';
+        } else if ($value === JqlBuilder::ASSIGNEE_UNASSIGNED) {
+          $label = 'Unassigned';
+        } else if ($group === 'assignee') {
+          foreach ($cached['assigneeUsers'] ?? [] as $user) {
+            if ($user['accountId'] === $value) {
+              $label = $user['displayName'];
+              break;
+            }
+          }
+        }
+        $items[] = ['value' => $value, 'label' => $label, 'selected' => in_array($value, $selected, true)];
+      }
+      self::list('filters', $group . '-options')->setItems($items);
+    }
+    self::refreshFilterSummaries();
   }
 
   /** Show saved custom JQL filters. */
@@ -872,12 +1120,12 @@ class Controller {
 
   /** Find an input by XML id. */
   private static function input(string $screen, string $id): Input {
-    return self::$window->screen($screen)->widget($id);
+    return self::$window->screen($screen)->widget($id) ?? ($screen === 'filters' ? self::$filterWidgets[$id] : null);
   }
 
   /** Find a list by XML id. */
   private static function list(string $screen, string $id): ListView {
-    return self::$window->screen($screen)->widget($id);
+    return self::$window->screen($screen)->widget($id) ?? ($screen === 'filters' ? self::$filterWidgets[$id] : null);
   }
 
   /** Find a table by XML id. */
@@ -887,7 +1135,11 @@ class Controller {
 
   /** Find a title by XML id. */
   private static function title(string $screen, string $id): Title {
-    return self::$window->screen($screen)->widget($id);
+    return self::$window->screen($screen)->widget($id) ?? ($screen === 'filters' ? self::$filterWidgets[$id] : null);
+  }
+
+  private static function date(string $screen, string $id): DateSelector {
+    return self::$window->screen($screen)->widget($id) ?? ($screen === 'filters' ? self::$filterWidgets[$id] : null);
   }
 
   /** Find a text widget by XML id. */
