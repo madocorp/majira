@@ -13,7 +13,15 @@ final class FilterSummary extends Widget {
 
   private string $value = '-';
 
-  public function __construct(private readonly string $title, private readonly Style $style = new Style()) {
+  public function __construct(private string $title, private readonly Style $style = new Style()) {
+  }
+
+  public function setTitle(string $title): void {
+    if (!mb_check_encoding($title, 'UTF-8') || preg_match('/[\x00-\x1f\x7f]/', $title)) {
+      throw new \InvalidArgumentException('Filter title must be printable single-line UTF-8 text.');
+    }
+    $this->title = $title;
+    $this->emit('change');
   }
 
   public function setValue(string $value): void {

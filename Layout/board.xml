@@ -1,29 +1,6 @@
 <Screen>
   <Layout>
-    <Layout direction="horizontal">
-      <Layout>
-        <Title height="2*">TO DO</Title>
-        <Separator />
-        <Title height="1*">BLOCKED</Title>
-      </Layout>
-      <Separator />
-      <Layout>
-        <Title height="1*">IN PROGRESS</Title>
-        <Separator />
-        <Title height="1*">CODE REVIEW</Title>
-      </Layout>
-      <Separator />
-      <Layout>
-        <Title height="1*">TESTING</Title>
-        <Separator />
-        <Title height="1*">WAIT FOR RELEASE</Title>
-      </Layout>
-      <Separator />
-      <Layout>
-        <Title height="1*">DONE</Title>
-      </Layout>
-    </Layout>
-    <Separator />
+    <Empty height="1*" />
     <StatusBar id="status" height="1" />
   </Layout>
 </Screen>

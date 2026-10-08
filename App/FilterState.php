@@ -36,6 +36,9 @@ class FilterState {
     foreach (['customJql', 'lastJql', 'selectedCustomFilter'] as $key) {
       $normalized[$key] = trim((string)($filters[$key] ?? ''));
     }
+    $normalized['customJqlEdited'] = (bool)($filters['customJqlEdited'] ?? false);
+    $legacyJql = trim((string)($filters['customJql'] ?? '')) !== '' || !empty($filters['customJqlEdited']);
+    $normalized['mode'] = ($filters['mode'] ?? ($legacyJql ? 'jql' : 'builder')) === 'jql' ? 'jql' : 'builder';
     foreach (['updated', 'created'] as $field) {
       $date = trim((string)($filters[$field] ?? ''));
       $to = trim((string)($filters[$field . 'To'] ?? ''));
@@ -68,8 +71,16 @@ class FilterState {
     ];
     $normalized['orderBy'] = self::normalizeOrderBy($filters['orderBy'] ?? []);
     $normalized['customFilters'] = self::normalizeCustomFilters($filters['customFilters'] ?? []);
-    if ($normalized['customJql'] !== '') {
+    if ($normalized['customJql'] !== '' || $normalized['customJqlEdited']) {
       $normalized['selectedCustomFilter'] = '';
+    }
+    if ($normalized['selectedCustomFilter'] !== '') {
+      $selected = self::customFilterByName($normalized['selectedCustomFilter'], $normalized);
+      if ($selected === null) {
+        $normalized['selectedCustomFilter'] = '';
+      } else {
+        $normalized['mode'] = $selected['mode'];
+      }
     }
     return $normalized;
   }
@@ -87,6 +98,8 @@ class FilterState {
       'search' => self::defaultSearch(),
       'orderBy' => [],
       'customJql' => '',
+      'customJqlEdited' => false,
+      'mode' => 'builder',
       'lastJql' => '',
       'customFilters' => [],
       'selectedCustomFilter' => '',
@@ -154,13 +167,112 @@ class FilterState {
       }
       $name = trim((string)($filter['name'] ?? ''));
       $jql = trim((string)($filter['jql'] ?? ''));
-      if ($name === '' || $jql === '' || isset($names[$name])) {
+      $key = mb_strtolower($name);
+      if ($name === '' || isset($names[$key])) {
         continue;
       }
-      $names[$name] = true;
-      $normalized[] = ['name' => $name, 'jql' => $jql];
+      $names[$key] = true;
+      $row = ['name' => $name, 'jql' => $jql];
+      // Existing saved queries may contain hand edits; preserve them as JQL filters.
+      $legacyMode = $jql === '' && isset($filter['form']) ? 'builder' : 'jql';
+      $row['mode'] = ($filter['mode'] ?? $legacyMode) === 'jql' ? 'jql' : 'builder';
+      if (is_array($filter['form'] ?? null)) {
+        $row['form'] = self::formValues($filter['form']);
+      }
+      if (is_array($filter['scope'] ?? null)) {
+        $row['scope'] = self::scopeValues($filter['scope']);
+      }
+      $normalized[] = $row;
     }
     return $normalized;
+  }
+
+  /** Keep only the editable fields in a saved form snapshot. */
+  public static function formValues(array $filters): array {
+    $defaults = self::defaults();
+    $form = [];
+    foreach (['assignee', 'status', 'type', 'priority'] as $group) {
+      $form[$group] = self::stringList($filters[$group] ?? []);
+    }
+    foreach (['updated', 'updatedTo', 'created', 'createdTo'] as $field) {
+      $date = trim((string)($filters[$field] ?? ''));
+      $form[$field] = self::validDate($date) ? $date : '';
+    }
+    $search = is_array($filters['search'] ?? null) ? $filters['search'] : [];
+    $form['search'] = array_replace($defaults['search'], array_intersect_key($search, $defaults['search']));
+    $form['search']['text'] = trim((string)$form['search']['text']);
+    return $form;
+  }
+
+  public static function scopeValues(array $settings): array {
+    return [
+      'projectKey' => trim((string)($settings['projectKey'] ?? '')),
+      'boardId' => trim((string)($settings['boardId'] ?? '')),
+      'sprintId' => trim((string)($settings['sprintId'] ?? '')),
+    ];
+  }
+
+  /** Reset the selected filter while retaining its name, mode, and other saved filters. */
+  public static function clearCurrent(array $filters): array {
+    $filters = self::normalize($filters);
+    $form = self::formValues(self::defaults());
+    $filters = array_replace($filters, $form);
+    $filters['orderBy'] = [];
+    $filters['customJql'] = '';
+    $name = $filters['selectedCustomFilter'];
+    $filters['customJqlEdited'] = $name === '' && $filters['mode'] === 'jql';
+    if ($name !== '') {
+      foreach ($filters['customFilters'] as &$row) {
+        if ($row['name'] === $name) {
+          $row['jql'] = '';
+          $row['form'] = $form;
+          $row['scope'] = self::scopeValues([]);
+          break;
+        }
+      }
+      unset($row);
+    }
+    return $filters;
+  }
+
+  /** Remove one saved filter and select its next neighbor, or the previous last row. */
+  public static function removeSavedFilter(array $filters, string $name): array {
+    $filters = self::normalize($filters);
+    foreach ($filters['customFilters'] as $index => $row) {
+      if ($row['name'] !== $name) {
+        continue;
+      }
+      array_splice($filters['customFilters'], $index, 1);
+      $remaining = $filters['customFilters'];
+      $next = $remaining === [] ? null : $remaining[min($index, count($remaining) - 1)];
+      $filters['selectedCustomFilter'] = $next['name'] ?? '';
+      $filters['mode'] = $next['mode'] ?? 'builder';
+      $filters['customJql'] = '';
+      $filters['customJqlEdited'] = false;
+      break;
+    }
+    return $filters;
+  }
+
+  /** Reorder saved rows while keeping each row's query and form attached to its name. */
+  public static function reorderSavedFilters(array $filters, array $names): array {
+    $filters = self::normalize($filters);
+    $rows = [];
+    foreach ($filters['customFilters'] as $row) {
+      $rows[$row['name']] = $row;
+    }
+    if (count($names) !== count($rows) || count(array_unique($names)) !== count($names)) {
+      return $filters;
+    }
+    $ordered = [];
+    foreach ($names as $name) {
+      if (!is_string($name) || !isset($rows[$name])) {
+        return $filters;
+      }
+      $ordered[] = $rows[$name];
+    }
+    $filters['customFilters'] = $ordered;
+    return $filters;
   }
 
   public static function customFilterByName(string $name, array $filters): ?array {
