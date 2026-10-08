@@ -5,9 +5,10 @@ namespace MAJIRA\App;
 use MAJIRA\Jira\Adf;
 use SPTK\App;
 use SPTK\Core\Window;
+use SPTK\Core\Style;
 use SPTK\Events\EventContext;
 use SPTK\Events\EventDefinition;
-use SPTK\Layout\{LayoutLeaf, LayoutNode};
+use SPTK\Layout\{LayoutLeaf, LayoutNode, LayoutSeparator};
 use SPTK\Widgets\DateSelector\DateSelector;
 use SPTK\Widgets\Input\Input;
 use SPTK\Widgets\List\ListView;
@@ -33,12 +34,17 @@ class Controller {
   private static ?LayoutNode $listSidebar = null;
   private static bool $sidebarOpen = false;
   private static ?string $sidebarSelection = null;
-  private const FILTER_TILES = ['project', 'board', 'sprint', 'search', 'updated', 'created', 'status', 'type', 'priority', 'assignee'];
+  private const FILTER_TILES = ['name', 'project', 'board', 'sprint', 'search', 'updated', 'created', 'status', 'type', 'priority', 'assignee'];
   private static array $filterExpanded = [];
   private static array $filterCompact = [];
   private static array $filterWidgets = [];
+  private static ?LayoutNode $filterTiles = null;
   private static array $dateSlots = [];
-  private static string $activeFilterTile = 'project';
+  private static string $activeFilterTile = 'name';
+  private static string $editingFilterName = '';
+  private static string $editingJqlText = '';
+  private static ?LayoutNode $jqlFilterView = null;
+  private static bool $showingJqlFilter = false;
 
   /** Restore cached data after the window opens. */
   public static function initialize(EventContext $event): void {
@@ -56,13 +62,18 @@ class Controller {
     self::input('list', 'jql')->setValue((new JqlBuilder())->current());
     self::renderNavigation();
     self::renderTickets();
-    self::renderFilters();
+    $filters = FilterState::load();
+    $selected = FilterState::customFilterByName($filters['selectedCustomFilter'], $filters);
+    if ($selected !== null) {
+      self::stageNamedFilter($selected['name'], $selected, true);
+    } else {
+      self::renderFilters();
+    }
     self::status(Settings::isConfigured() ? 'Cached Jira data ready. Refresh for new results.' : 'Set Jira connection in Settings.');
     if (Settings::isConfigured()) {
       if (ProjectCache::load() === []) {
         self::reloadProjects($event);
       }
-      self::loadMissingNavigationChoices();
     }
     if (Settings::isConfigured() && !empty(self::$meta['hasMore'])) {
       self::reportTicketCount();
@@ -77,6 +88,8 @@ class Controller {
     }
     $filters = FilterState::load();
     $filters['customJql'] = $jql;
+    $filters['customJqlEdited'] = true;
+    $filters['mode'] = 'jql';
     $filters['lastJql'] = $jql;
     $filters['selectedCustomFilter'] = '';
     FilterState::save($filters);
@@ -174,6 +187,8 @@ class Controller {
       return false;
     }
     $filters['customJql'] = $filters['lastJql'];
+    $filters['customJqlEdited'] = true;
+    $filters['mode'] = 'jql';
     $filters['selectedCustomFilter'] = '';
     FilterState::save($filters);
     self::input('list', 'jql')->setValue($filters['lastJql']);
@@ -293,11 +308,11 @@ class Controller {
       Settings::save($settings);
     }
     self::renderNavigation();
+    self::loadMissingNavigationChoices(true);
     self::renderFilterOptions();
-    self::input('list', 'jql')->setValue((new JqlBuilder())->current());
+    self::saveGeneratedFilter($event);
     self::status('Project: ' . ($value === '' ? 'Any project' : $value));
     self::refreshFilterSummaries();
-    self::loadMissingNavigationChoices(true);
   }
 
   /** Select a board and reset its sprint. */
@@ -311,11 +326,11 @@ class Controller {
     $settings['sprintId'] = '';
     Settings::save($settings);
     self::renderNavigation();
+    self::loadMissingNavigationChoices();
     self::renderFilterOptions();
-    self::input('list', 'jql')->setValue((new JqlBuilder())->current());
+    self::saveGeneratedFilter($event);
     self::status('Board for sprint choices: ' . ($value ?: 'None selected'));
     self::refreshFilterSummaries();
-    self::loadMissingNavigationChoices();
   }
 
   /** Select a sprint. */
@@ -328,7 +343,7 @@ class Controller {
     $settings['sprintId'] = $value;
     Settings::save($settings);
     self::renderNavigation();
-    self::input('list', 'jql')->setValue((new JqlBuilder())->current());
+    self::saveGeneratedFilter($event);
     self::status('Sprint: ' . ($value ?: 'Any sprint'));
     self::refreshFilterSummaries();
   }
@@ -337,28 +352,6 @@ class Controller {
   public static function reloadProjects(EventContext $event): void {
     self::request('GET projects', function(): void {
       self::$data->projects();
-      self::renderNavigation();
-    });
-  }
-
-  /** Refresh boards for the selected project, or across projects. */
-  public static function reloadBoards(EventContext $event): void {
-    $key = (string)(Settings::load()['projectKey'] ?? '');
-    self::request('GET boards for ' . ($key === '' ? 'all projects' : $key), function() use ($key): void {
-      self::$data->boards($key);
-      self::renderNavigation();
-    });
-  }
-
-  /** Refresh sprints for the selected board. */
-  public static function reloadSprints(EventContext $event): void {
-    $id = (string)(Settings::load()['boardId'] ?? '');
-    if ($id === '') {
-      self::status('Select a board first.', true);
-      return;
-    }
-    self::request('GET sprints for board ' . $id, function() use ($id): void {
-      self::$data->sprints($id);
       self::renderNavigation();
     });
   }
@@ -453,111 +446,294 @@ class Controller {
     App::eventLoop()->stop();
   }
 
-  /** Persist selected values for one filter group. */
-  public static function saveFilterGroup(EventContext $event): void {
-    $id = $event->widget?->id() ?? '';
-    $group = str_ends_with($id, '-options') ? substr($id, 0, -strlen('-options')) : self::$activeFilterTile;
-    if (!in_array($group, ['status', 'type', 'priority', 'assignee'], true)) {
-      self::status('Select a choice filter first.', true);
+  /** Discard filter choice data; fetch projects so the first choice remains available. */
+  public static function clearFilterChoiceCache(EventContext $event): void {
+    self::$data->clearFilterChoices();
+    self::renderNavigation();
+    self::renderFilterOptions();
+    if (!Settings::isConfigured()) {
+      self::status('Filter choices cleared. Connect to Jira to reload projects.');
       return;
     }
-    $filters = FilterState::load();
-    $filters[$group] = self::list('filters', $group . '-options')->getValue();
-    $filters['customJql'] = '';
-    $filters['selectedCustomFilter'] = '';
-    FilterState::save($filters);
-    self::refreshFilterSummaries();
-    self::status(ucfirst($group) . ' filter saved.');
+    if (self::request('GET projects', function(): void {
+      self::$data->projects();
+      self::renderNavigation();
+    })) {
+      self::status('Filter choices cleared. Confirm a project to reload its choices.');
+      self::$window->refreshLayout();
+    }
   }
 
-  /** Refresh project filter choices even when already cached. */
-  public static function loadFilterOptions(EventContext $event): void {
-    $project = (string)(Settings::load()['projectKey'] ?? '');
-    self::request('GET filter options for ' . ($project === '' ? 'any project' : $project), function() use ($project): void {
-      self::$data->filterOptions($project, true);
-      self::renderFilterOptions();
-    });
-  }
-
-  /** Save the staged choices under a name and apply their generated JQL. */
+  /** Apply the already saved JQL. */
   public static function applyFilters(EventContext $event): void {
-    $name = trim(self::input('filters', 'custom-name')->getValue());
-    if ($name === '') {
-      self::status('Name this filter before applying it.', true);
+    $jql = trim((new JqlBuilder())->current());
+    if ($jql === '') {
+      self::status('Enter a JQL query or choose at least one filter first.', true);
       return;
     }
     $filters = FilterState::load();
-    $filters['search']['text'] = trim(self::input('filters', 'search')->getValue());
-    foreach (['updated', 'created'] as $field) {
-      $from = self::$dateSlots[$field]['from']['enabled'] ? self::date('filters', $field . '-date')->getValue() : '';
-      $to = self::$dateSlots[$field]['to']['enabled'] ? self::date('filters', $field . '-to-date')->getValue() : '';
-      if ($from !== '' && $to !== '' && $from > $to) {
-        self::status(ucfirst($field) . ': From must be on or before Through.', true);
-        return;
+    if ($filters['mode'] === 'builder') {
+      foreach (['updated', 'created'] as $field) {
+        if ($filters[$field] !== '' && $filters[$field . 'To'] !== '' && $filters[$field] > $filters[$field . 'To']) {
+          self::status(ucfirst($field) . ': From must be on or before Through.', true);
+          return;
+        }
       }
-      $filters[$field] = $from;
-      $filters[$field . 'To'] = $to;
     }
-    foreach (['status', 'type', 'priority', 'assignee'] as $group) {
-      $filters[$group] = self::list('filters', $group . '-options')->getValue();
-    }
-    $jql = (new JqlBuilder())->generatedFor($filters);
-    if ($jql === '') {
-      self::status('Set at least one filter before saving it.', true);
-      return;
-    }
-    self::storeNamedFilter($filters, $name, $jql, true);
     self::input('list', 'jql')->setValue($jql);
     self::$window->setCurrentScreenId('list');
     self::applyFilterAndFocusTable();
   }
 
-  /** Clear filters but preserve saved custom JQL entries. */
-  public static function clearFilters(EventContext $event): void {
-    $current = FilterState::load();
-    $filters = FilterState::defaults();
-    $filters['customFilters'] = $current['customFilters'];
-    $filters['lastJql'] = $current['lastJql'];
-    FilterState::save($filters);
-    self::renderFilters();
-    self::input('list', 'jql')->setValue((new JqlBuilder())->current());
-    self::status('Filters cleared.');
-  }
-
-  /** Store the current JQL under a reusable name. */
-  public static function saveCustomFilter(EventContext $event): void {
-    $name = trim(self::input('filters', 'custom-name')->getValue());
-    $jql = trim(self::input('list', 'jql')->getValue());
-    if ($name === '' || $jql === '') {
-      self::status('Enter a filter name and JQL first.', true);
+  /** Save builder choices; the editable JQL view is a separate mode. */
+  public static function saveGeneratedFilter(EventContext $event): void {
+    $filters = FilterState::load();
+    if ($filters['mode'] !== 'builder') {
       return;
     }
-    self::storeNamedFilter(FilterState::load(), $name, $jql, false);
-    self::status('Saved filter: ' . $name);
+    $filters['search']['text'] = trim(self::input('filters', 'search')->getValue());
+    foreach (['updated', 'created'] as $field) {
+      $filters[$field] = self::$dateSlots[$field]['from']['enabled'] ? self::date('filters', $field . '-date')->getValue() : '';
+      $filters[$field . 'To'] = self::$dateSlots[$field]['to']['enabled'] ? self::date('filters', $field . '-to-date')->getValue() : '';
+    }
+    $project = (string)(Settings::load()['projectKey'] ?? '');
+    $choices = FilterCache::load($project);
+    if ($choices['_loaded'] && $choices['priorityScope'] === ($project === '' ? 'global' : 'project')) {
+      foreach (['status', 'type', 'priority', 'assignee'] as $group) {
+        $filters[$group] = self::list('filters', $group . '-options')->getValue();
+      }
+    }
+    $jql = (new JqlBuilder())->generatedFor($filters);
+    $filters['customJql'] = '';
+    $filters['customJqlEdited'] = false;
+    $name = self::$editingFilterName;
+    if ($name !== '') {
+      foreach ($filters['customFilters'] as &$row) {
+        if ($row['name'] === $name) {
+          $row['jql'] = $jql;
+          $row['form'] = FilterState::formValues($filters);
+          $row['scope'] = FilterState::scopeValues(Settings::load());
+          break;
+        }
+      }
+      unset($row);
+      $filters['selectedCustomFilter'] = $name;
+    } else {
+      $filters['selectedCustomFilter'] = '';
+    }
+    FilterState::save($filters);
+    self::input('list', 'jql')->setValue($jql);
+    self::refreshFilterSummaries();
+    self::$window->refreshLayout();
   }
 
-  /** Activate a saved JQL filter. */
-  public static function useCustomFilter(EventContext $event): void {
+  /** Ignore navigation keys in the search input. */
+  public static function searchChanged(EventContext $event): void {
+    if (trim(self::input('filters', 'search')->getValue()) !== FilterState::load()['search']['text']) {
+      self::saveGeneratedFilter($event);
+    }
+  }
+
+  /** Persist manual JQL edits as soon as the editor changes. */
+  public static function saveEditedFilterJql(EventContext $event): void {
+    if (FilterState::load()['mode'] !== 'jql') {
+      return;
+    }
+    $text = self::editor('filters', 'filter-jql')->getValue();
+    if ($text === self::$editingJqlText) {
+      return;
+    }
+    self::$editingJqlText = $text;
+    $jql = trim($text);
+    $filters = FilterState::load();
+    $name = self::$editingFilterName;
+    if ($name !== '') {
+      foreach ($filters['customFilters'] as &$row) {
+        if ($row['name'] === $name) {
+          $row['jql'] = $jql;
+          break;
+        }
+      }
+      unset($row);
+      $filters['selectedCustomFilter'] = $name;
+      $filters['customJql'] = '';
+      $filters['customJqlEdited'] = false;
+    } else {
+      $filters['customJql'] = $jql;
+      $filters['customJqlEdited'] = true;
+      $filters['selectedCustomFilter'] = '';
+    }
+    FilterState::save($filters);
+    self::input('list', 'jql')->setValue($jql);
+    self::refreshFilterSummaries();
+  }
+
+  /** Convert the current builder filter into an independently editable query. */
+  public static function switchToJqlMode(EventContext $event): void {
+    $filters = FilterState::load();
+    if ($filters['mode'] === 'jql') {
+      self::status('This filter is already in JQL mode.');
+      return;
+    }
+    $jql = (new JqlBuilder())->generatedFor($filters);
+    $filters['mode'] = 'jql';
+    $name = self::$editingFilterName;
+    if ($name !== '') {
+      foreach ($filters['customFilters'] as &$row) {
+        if ($row['name'] === $name) {
+          $row['mode'] = 'jql';
+          $row['jql'] = $jql;
+          $row['form'] = FilterState::formValues($filters);
+          $row['scope'] = FilterState::scopeValues(Settings::load());
+          break;
+        }
+      }
+      unset($row);
+    } else {
+      $filters['customJql'] = $jql;
+      $filters['customJqlEdited'] = true;
+    }
+    FilterState::save($filters);
+    self::renderJqlEditor();
+    self::renderFilterMode();
+    self::input('list', 'jql')->setValue($jql);
+    self::$window->refreshLayout();
+    self::status('JQL mode saved. Recreate this filter to use the builder again.');
+  }
+
+  /** Reset the current saved or unnamed filter without changing its identity. */
+  public static function clearFilter(EventContext $event): void {
+    $filters = FilterState::clearCurrent(FilterState::load());
+    Settings::save(array_replace(Settings::load(), FilterState::scopeValues([])));
+    FilterState::save($filters);
+    self::renderNavigation();
+    self::renderFilters();
+    self::input('list', 'jql')->setValue('');
+    self::status('Filter cleared.');
+    self::$window->refreshLayout();
+  }
+
+  /** Add a blank named filter and show its empty form. */
+  public static function newFilter(EventContext $event): void {
+    $filters = FilterState::load();
+    if (self::nameInUse('new', $filters)) {
+      self::status('A filter named new already exists.', true);
+      return;
+    }
+    $form = FilterState::formValues(FilterState::defaults());
+    $filters = array_replace($filters, $form);
+    $filters['customJql'] = '';
+    $filters['customJqlEdited'] = false;
+    $filters['mode'] = 'builder';
+    $filters['selectedCustomFilter'] = 'new';
+    $scope = FilterState::scopeValues([]);
+    $filters['customFilters'][] = ['name' => 'new', 'jql' => '', 'mode' => 'builder', 'form' => $form, 'scope' => $scope];
+    Settings::save(array_replace(Settings::load(), $scope));
+    FilterState::save($filters);
+    self::$editingFilterName = 'new';
+    self::renderNavigation();
+    self::renderFilters();
+    self::input('filters', 'custom-name')->setValue('new', true);
+    self::input('list', 'jql')->setValue('');
+    self::openFilterTile('name', false);
+    self::$window->screen('filters')->activateLeaf(self::expandedFilterLeaf('name'));
+    self::status('New filter added.');
+    self::$window->refreshLayout();
+  }
+
+  /** Restore the form recorded for the highlighted saved filter. */
+  public static function selectCustomFilter(EventContext $event): void {
     $name = self::list('filters', 'custom-filters')->getValue();
     if (!is_string($name) || $name === '') {
       return;
     }
-    if (self::activateCustomFilter($name)) {
-      self::$window->setCurrentScreenId('list');
-      self::applyFilterAndFocusTable();
+    $filters = FilterState::load();
+    $row = FilterState::customFilterByName($name, $filters);
+    if ($row === null) {
+      return;
     }
+    self::stageNamedFilter($name, $row, false);
+    self::$window->refreshLayout();
   }
 
-  /** Store one named query and optionally make it the active List query. */
-  private static function storeNamedFilter(array $filters, string $name, string $jql, bool $activate): void {
-    $filters['customFilters'] = array_values(array_filter($filters['customFilters'], fn(array $row): bool => $row['name'] !== $name));
-    $filters['customFilters'][] = ['name' => $name, 'jql' => $jql];
-    if ($activate) {
-      $filters['selectedCustomFilter'] = $name;
-      $filters['customJql'] = '';
-    }
+  /** Preserve the saved filter order after Shift+Up/Down. */
+  public static function reorderCustomFilters(EventContext $event): void {
+    $filters = FilterState::reorderSavedFilters(FilterState::load(), self::list('filters', 'custom-filters')->values());
     FilterState::save($filters);
+    self::renderSidebarFilters();
+  }
+
+  /** Restore a saved query and its available form choices. */
+  private static function stageNamedFilter(string $name, array $row, bool $renderSaved): void {
+    $filters = FilterState::load();
+    $filters = array_replace($filters, $row['form'] ?? FilterState::formValues(FilterState::defaults()));
+    $filters['customJql'] = '';
+    $filters['customJqlEdited'] = false;
+    $filters['mode'] = $row['mode'];
+    $filters['selectedCustomFilter'] = $name;
+    Settings::save(array_replace(Settings::load(), $row['scope'] ?? FilterState::scopeValues([])));
+    FilterState::save($filters);
+    self::renderNavigation();
+    self::$editingFilterName = $name;
+    self::renderFilters($renderSaved);
+    self::openFilterTile('name', false);
+    self::input('filters', 'custom-name')->setValue($name);
+    self::input('list', 'jql')->setValue($row['jql']);
+  }
+
+  /** Save the current filter under a name, or rename its selected entry. */
+  public static function renameCustomFilter(EventContext $event): void {
+    $name = trim(self::input('filters', 'custom-name')->getValue());
+    $old = self::$editingFilterName;
+    if ($name === $old) {
+      return;
+    }
+    if ($name === '') {
+      self::input('filters', 'custom-name')->setValue($old);
+      self::status('Filter name cannot be empty.', true);
+      return;
+    }
+    $filters = FilterState::load();
+    if (self::nameInUse($name, $filters, $old)) {
+      self::input('filters', 'custom-name')->setValue($old);
+      self::status('A filter named ' . $name . ' already exists.', true);
+      return;
+    }
+    if ($old === '') {
+      $filters['customFilters'][] = [
+        'name' => $name,
+        'jql' => (new JqlBuilder())->current(),
+        'mode' => $filters['mode'],
+        'form' => FilterState::formValues($filters),
+        'scope' => FilterState::scopeValues(Settings::load()),
+      ];
+      $filters['customJql'] = '';
+      $filters['customJqlEdited'] = false;
+    } else {
+      foreach ($filters['customFilters'] as &$row) {
+        if ($row['name'] === $old) {
+          $row['name'] = $name;
+          break;
+        }
+      }
+      unset($row);
+    }
+    $filters['selectedCustomFilter'] = $name;
+    FilterState::save($filters);
+    self::$editingFilterName = $name;
     self::renderCustomFilters();
+    self::refreshFilterSummaries();
+    self::$window->refreshLayout();
+    self::status(($old === '' ? 'Saved filter: ' : 'Renamed filter: ') . $name);
+  }
+
+  private static function nameInUse(string $name, array $filters, string $except = ''): bool {
+    foreach ($filters['customFilters'] as $row) {
+      if ($row['name'] !== $except && mb_strtolower($row['name']) === mb_strtolower($name)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Select a saved JQL query and update the List input. */
@@ -567,28 +743,42 @@ class Controller {
     if ($selected === null) {
       return false;
     }
-    $filters['selectedCustomFilter'] = $name;
-    $filters['customJql'] = '';
-    FilterState::save($filters);
-    self::input('list', 'jql')->setValue((string)$selected['jql']);
+    if (trim((string)$selected['jql']) === '') {
+      self::status('Save this filter before using it.', true);
+      return false;
+    }
+    self::stageNamedFilter($name, $selected, true);
     self::status('Using saved filter: ' . $name);
     return true;
   }
 
-  /** Delete a saved JQL filter. */
+  /** Delete the highlighted filter and load the adjacent saved filter. */
   public static function deleteCustomFilter(EventContext $event): void {
     $name = self::list('filters', 'custom-filters')->getValue();
     if (!is_string($name) || $name === '') {
       return;
     }
     $filters = FilterState::load();
-    $filters['customFilters'] = array_values(array_filter($filters['customFilters'], fn(array $row): bool => $row['name'] !== $name));
-    if ($filters['selectedCustomFilter'] === $name) {
-      $filters['selectedCustomFilter'] = '';
+    if (FilterState::customFilterByName($name, $filters) === null) {
+      return;
     }
-    FilterState::save($filters);
-    self::renderCustomFilters();
+    $filters = FilterState::removeSavedFilter($filters, $name);
+    $nextName = $filters['selectedCustomFilter'];
+    if ($nextName !== '') {
+      FilterState::save($filters);
+      self::stageNamedFilter($nextName, FilterState::customFilterByName($nextName, $filters), true);
+    } else {
+      $filters = FilterState::clearCurrent($filters);
+      Settings::save(array_replace(Settings::load(), FilterState::scopeValues([])));
+      FilterState::save($filters);
+      self::$editingFilterName = '';
+      self::renderNavigation();
+      self::renderFilters();
+      self::openFilterTile('name', false);
+      self::input('list', 'jql')->setValue('');
+    }
     self::status('Deleted filter: ' . $name);
+    self::$window->refreshLayout();
   }
 
   /** Reload the current ticket from Jira. */
@@ -634,6 +824,11 @@ class Controller {
   /** Load tickets and show them only when the request succeeds. */
   private static function loadTickets(bool $more): bool {
     $jql = (new JqlBuilder())->current();
+    if (!$more) {
+      self::$issues = [];
+      self::$meta = [];
+      self::renderTickets();
+    }
     return self::request('POST Jira ticket search' . ($more ? ' (more)' : ''), function() use ($jql, $more): void {
       $result = self::$data->tickets($jql, $more);
       self::$issues = $result['issues'];
@@ -707,7 +902,7 @@ class Controller {
 
   /** Notify every screen through its built-in status bar. */
   private static function status(string $message, bool $error = false): void {
-    foreach (['list', 'filters', 'ticket', 'settings', 'create'] as $screen) {
+    foreach (['list', 'filters', 'board', 'ticket', 'settings', 'create'] as $screen) {
       $bar = self::$window->screen($screen)?->statusBar;
       $error ? $bar?->error($message) : $bar?->notify($message);
     }
@@ -791,8 +986,10 @@ class Controller {
   }
 
   /** Restore search, date, and choice filters. */
-  private static function renderFilters(): void {
+  private static function renderFilters(bool $renderSaved = true): void {
     $filters = FilterState::load();
+    self::$editingFilterName = $filters['selectedCustomFilter'];
+    self::input('filters', 'custom-name')->setValue(self::$editingFilterName);
     self::input('filters', 'search')->setValue($filters['search']['text']);
     foreach (['updated', 'created'] as $field) {
       self::date('filters', $field . '-date')->setValue($filters[$field] ?: date('Y-m-d'));
@@ -801,8 +998,46 @@ class Controller {
       self::showDateSlot($field, 'to', $filters[$field . 'To'] !== '');
     }
     self::renderFilterOptions();
-    self::renderCustomFilters();
+    if ($renderSaved) {
+      self::renderCustomFilters();
+    } else {
+      self::renderSidebarFilters();
+    }
+    if ($filters['mode'] === 'jql') {
+      self::renderJqlEditor();
+    }
+    self::renderFilterMode();
     self::refreshFilterSummaries();
+  }
+
+  /** Restore the JQL text when selecting a query-mode filter. */
+  private static function renderJqlEditor(): void {
+    $jql = self::displayedJql();
+    self::$editingJqlText = JqlFormatter::format($jql);
+    self::editor('filters', 'filter-jql')->setValue(self::$editingJqlText);
+  }
+
+  private static function displayedJql(): string {
+    $filters = FilterState::load();
+    $row = FilterState::customFilterByName(self::$editingFilterName, $filters);
+    return $row['jql'] ?? ($filters['customJqlEdited'] || $filters['customJql'] !== '' ? $filters['customJql'] : (new JqlBuilder())->generatedFor($filters));
+  }
+
+  /** Show the builder or the JQL editor for the selected filter. */
+  private static function renderFilterMode(): void {
+    $jql = FilterState::load()['mode'] === 'jql';
+    if ($jql === self::$showingJqlFilter) {
+      return;
+    }
+    $screen = self::$window->screen('filters');
+    $middle = $screen->layout->findNode('filter-middle');
+    $tiles = self::$filterTiles;
+    if (!$middle->replaceChild($jql ? $tiles : self::$jqlFilterView, $jql ? self::$jqlFilterView : $tiles)) {
+      throw new \LogicException('Filter mode layout is missing.');
+    }
+    self::$showingJqlFilter = $jql;
+    $screen->setLayout($screen->layout);
+    self::$window->refreshLayout();
   }
 
   /** Keep one full-height filter tile and two-line summaries for the others. */
@@ -812,6 +1047,25 @@ class Controller {
     if ($column === null) {
       throw new \LogicException('Filter tile column is missing.');
     }
+    self::$filterTiles = $column;
+    $nameNode = $column->findNode('filter-name');
+    $nameInput = $nameNode === null ? null : $nameNode->leaves()[0]->instance();
+    if (!$nameInput instanceof Input) {
+      throw new \LogicException('Filter name input is missing.');
+    }
+    $editor = new TextEditor('', new Style(), true, 8, null, 'JQL');
+    $editor->setId('filter-jql');
+    self::$filterWidgets['filter-jql'] = $editor;
+    self::$jqlFilterView = new LayoutNode('vertical', '1*', '1*', id: 'filter-jql-mode');
+    // Both views use the same input, so an in-progress name survives mode changes.
+    self::$jqlFilterView->addLeaf(new LayoutLeaf('Input', '1*', 'auto', $nameInput, [
+      new EventDefinition('deactivate', null, self::class . '::renameCustomFilter'),
+    ]));
+    self::$jqlFilterView->addSeparator(new LayoutSeparator());
+    self::$jqlFilterView->addLeaf(new LayoutLeaf('TextEditor', '1*', '1*', $editor, [
+      new EventDefinition('keyUp', null, self::class . '::saveEditedFilterJql'),
+      new EventDefinition('deactivate', null, self::class . '::saveEditedFilterJql'),
+    ]));
     foreach (self::FILTER_TILES as $key) {
       $node = $column->findNode('filter-' . $key);
       if ($node === null) {
@@ -824,7 +1078,7 @@ class Controller {
           self::$filterWidgets[$id] = $leaf->instance();
         }
       }
-      $summary = new FilterSummary(ucfirst($key));
+      $summary = new FilterSummary($key === 'name' ? 'Filter name' : ucfirst($key));
       $summary->setId('filter-summary-' . $key);
       $compact = new LayoutLeaf('FilterSummary', '1*', '2', $summary, [
         new EventDefinition('select', null, self::class . '::expandFilterTile'),
@@ -859,7 +1113,7 @@ class Controller {
           $id = $field . ($bound === 'to' ? '-to-date' : '-date');
           self::date('filters', $id)->setValue(date('Y-m-d'));
           self::showDateSlot($field, $bound, true, true);
-          self::refreshFilterSummaries();
+          self::saveGeneratedFilter($event);
           return true;
         }
       }
@@ -874,7 +1128,7 @@ class Controller {
         if ($event->widget === $slot['date']->instance() && $slot['enabled']) {
           self::$window->screen('filters')->release('cancel');
           self::showDateSlot($field, $bound, false, true);
-          self::refreshFilterSummaries();
+          self::saveGeneratedFilter($event);
           return true;
         }
       }
@@ -884,7 +1138,7 @@ class Controller {
 
   /** Refresh the collapsed date summary after a calendar choice. */
   public static function dateSelectionChanged(EventContext $event): void {
-    self::refreshFilterSummaries();
+    self::saveGeneratedFilter($event);
   }
 
   private static function showDateSlot(string $field, string $bound, bool $enabled, bool $focus = false): void {
@@ -914,8 +1168,13 @@ class Controller {
   public static function expandFilterTile(EventContext $event): void {
     $id = $event->widget?->id() ?? '';
     $key = str_starts_with($id, 'filter-summary-') ? substr($id, strlen('filter-summary-')) : '';
-    if (!isset(self::$filterExpanded[$key]) || $key === self::$activeFilterTile) {
-      return;
+    self::openFilterTile($key, true);
+  }
+
+  /** Open one card, keeping list focus when a saved filter changes. */
+  private static function openFilterTile(string $key, bool $focus): bool {
+    if (self::$showingJqlFilter || !isset(self::$filterExpanded[$key]) || $key === self::$activeFilterTile) {
+      return false;
     }
     $previous = self::$activeFilterTile;
     $screen = self::$window->screen('filters');
@@ -924,9 +1183,12 @@ class Controller {
     $column->replaceChild(self::$filterCompact[$key], self::$filterExpanded[$key]);
     self::$activeFilterTile = $key;
     $screen->setLayout($screen->layout);
-    $screen->selectLeaf(self::$filterExpanded[$key]->leaves()[0]);
-    self::$window->refreshLayout();
+    if ($focus) {
+      $screen->selectLeaf(self::expandedFilterLeaf($key));
+    }
     self::refreshFilterSummaries();
+    self::$window->refreshLayout();
+    return true;
   }
 
   /** Right from saved filters enters the currently open filter tile. */
@@ -952,8 +1214,12 @@ class Controller {
   /** Select the expanded widget while leaving it ready for Return. */
   private static function focusExpandedFilter(): bool {
     $screen = self::$window->screen('filters');
-    $screen->selectLeaf(self::$filterExpanded[self::$activeFilterTile]->leaves()[0]);
+    $screen->selectLeaf(self::$showingJqlFilter ? self::$jqlFilterView->leaves()[1] : self::expandedFilterLeaf(self::$activeFilterTile));
     return true;
+  }
+
+  private static function expandedFilterLeaf(string $key): LayoutLeaf {
+    return self::$filterExpanded[$key]->leaves()[0];
   }
 
   /** Show each filter's current choice beneath its name while collapsed. */
@@ -963,6 +1229,7 @@ class Controller {
     }
     $settings = Settings::load();
     $values = [
+      'name' => self::input('filters', 'custom-name')->getValue(),
       'project' => (string)($settings['projectKey'] ?? ''),
       'board' => self::selectedFilterLabel('boards', (string)($settings['boardId'] ?? '')),
       'sprint' => self::selectedFilterLabel('sprints', (string)($settings['sprintId'] ?? '')),
@@ -1048,7 +1315,7 @@ class Controller {
     $filters = FilterState::load();
     $items = array_map(fn(array $row): array => ['value' => $row['name'], 'label' => $row['name']], $filters['customFilters']);
     self::list('filters', 'custom-filters')->setItems($items);
-    self::selectKnown('filters', 'custom-filters', $filters['selectedCustomFilter']);
+    self::selectKnown('filters', 'custom-filters', self::$editingFilterName ?: $filters['selectedCustomFilter']);
     self::renderSidebarFilters();
   }
 
@@ -1149,6 +1416,6 @@ class Controller {
 
   /** Find an editor by XML id. */
   private static function editor(string $screen, string $id): TextEditor {
-    return self::$window->screen($screen)->widget($id);
+    return self::$window->screen($screen)->widget($id) ?? ($screen === 'filters' ? self::$filterWidgets[$id] : null);
   }
 }

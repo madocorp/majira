@@ -9,22 +9,56 @@ use MAJIRA\App\Controller;
 use MAJIRA\App\FilterSummary;
 use SPTK\Core\Window;
 use SPTK\Core\Style;
-use SPTK\Layout\{LayoutLeaf, LayoutSeparator, Tile};
+use SPTK\Layout\{LayoutLeaf, LayoutNode, LayoutSeparator, Tile};
 use SPTK\SDLWrapper\SDL;
 use SPTK\Rendering\{Grid, GridWriter};
 use SPTK\Widgets\DateSelector\DateSelector;
+use SPTK\Widgets\Button\Button;
+use SPTK\Widgets\Input\Input;
+use SPTK\Widgets\TextEditor\TextEditor;
 use SPTK\XmlParser\ScreenParser;
 
 $screen = (new ScreenParser())->parse('filters.xml', new Style(), 'filters', 'Filters');
+$middle = $screen->layout->findNode('filter-middle');
 $column = $screen->layout->findNode('filter-tiles');
-if ($column === null || $screen->widget('custom-filters') === null || $screen->widget('custom-name') === null) {
+if ($middle === null || $column === null || $screen->widget('custom-filters') === null || !$screen->widget('custom-name') instanceof Input || $screen->widget('filter-jql') !== null) {
   throw new RuntimeException('Three filter columns must be present.');
 }
-$children = (new ReflectionProperty($column, 'children'))->getValue($column);
-if (count(array_filter($children, fn($child): bool => $child instanceof LayoutSeparator)) !== 9) {
-  throw new RuntimeException('Filter tiles must have a separator between each pair.');
+$saved = $screen->widget('custom-filters');
+if ((new ReflectionProperty($saved, 'filterable'))->getValue($saved) || (new ReflectionProperty($saved, 'searchable'))->getValue($saved) || !(new ReflectionProperty($saved, 'reorderable'))->getValue($saved)) {
+  throw new RuntimeException('Saved filters must allow reordering without text search.');
 }
-$keys = ['project', 'board', 'sprint', 'search', 'updated', 'created', 'status', 'type', 'priority', 'assignee'];
+$middleChildren = (new ReflectionProperty($middle, 'children'))->getValue($middle);
+if ($middleChildren[0] !== $column || $column->findNode('filter-name')->leaves()[0]->instance() !== $screen->widget('custom-name')) {
+  throw new RuntimeException('The filter name input must be the first builder card.');
+}
+$children = (new ReflectionProperty($column, 'children'))->getValue($column);
+if (count(array_filter($children, fn($child): bool => $child instanceof LayoutSeparator)) !== 10 || $children[0] !== $column->findNode('filter-name')) {
+  throw new RuntimeException('The builder deck must start with Filter name.');
+}
+foreach (['project', 'board', 'sprint'] as $group) {
+  $leaf = $column->findNode('filter-' . $group)->leaves()[0];
+  $events = (new ReflectionProperty($leaf, 'events'))->getValue($leaf);
+  $types = array_column($events, 'type');
+  if (!in_array('accept', $types, true) || in_array('change', $types, true)) {
+    throw new RuntimeException('Navigation choices must load only when list editing ends: ' . $group);
+  }
+}
+$actions = $screen->layout->findNode('filter-actions');
+$buttons = array_filter($actions->leaves(), fn($leaf): bool => $leaf->instance() instanceof Button);
+$labels = array_map(fn($leaf): string => (new ReflectionProperty(Button::class, 'label'))->getValue($leaf->instance()), $buttons);
+if (!in_array('Apply', $labels, true) || !in_array('Switch to JQL', $labels, true) || !in_array('Clear cache', $labels, true) || !in_array('Clear filter', $labels, true) || in_array('Clear filters', $labels, true) || in_array('Reload projects', $labels, true) || in_array('Reload boards', $labels, true) || in_array('Reload sprints', $labels, true) || in_array('Load filter options', $labels, true)) {
+  throw new RuntimeException('Filter actions must offer one cache reset and no separate refresh controls.');
+}
+$hotkeys = [];
+foreach ($buttons as $leaf) {
+  $button = $leaf->instance();
+  $hotkeys[$button->hotkey()] = (new ReflectionProperty(Button::class, 'label'))->getValue($button);
+}
+if ($hotkeys !== ['n' => 'New filter', 'j' => 'Switch to JQL', 'a' => 'Apply', 'd' => 'Delete filter', 'c' => 'Clear filter', 'r' => 'Clear cache']) {
+  throw new RuntimeException('Filter actions need the N, J, A, D, C, and R shortcuts.');
+}
+$keys = ['name', 'project', 'board', 'sprint', 'search', 'updated', 'created', 'status', 'type', 'priority', 'assignee'];
 foreach (['updated', 'created'] as $field) {
   if ($screen->widget($field . '-mode') !== null || !$screen->widget($field . '-date') instanceof DateSelector || !$screen->widget($field . '-to-date') instanceof DateSelector
     || $screen->widget($field . '-date')->preferredHeight() !== 10 || $screen->widget($field . '-to-date')->preferredHeight() !== 10
@@ -61,27 +95,39 @@ foreach ($keys as $key) {
     throw new RuntimeException('Missing expanded filter tile: ' . $key);
   }
   $compact[$key] = new LayoutLeaf('FilterSummary', '1*', '2', new FilterSummary(ucfirst($key)));
-  if ($key !== 'project') {
+  if ($key !== 'name') {
     $column->replaceChild($expanded[$key], $compact[$key]);
   }
 }
 $screen->setLayout($screen->layout);
 $screen->measureGrid(new Tile(0, 0, 132, 54));
-if ($expanded['project']->leaves()[0]->grid()->height <= 2) {
+if ($expanded['name']->leaves()[0]->grid()->height <= 2) {
   throw new RuntimeException('The selected filter must fill the remaining height.');
 }
+$nameWidget = $expanded['name']->leaves()[0]->instance();
 $projectWidget = $expanded['project']->leaves()[0]->instance();
-$column->replaceChild($expanded['project'], $compact['project']);
+$column->replaceChild($expanded['name'], $compact['name']);
 $column->replaceChild($compact['status'], $expanded['status']);
 $screen->setLayout($screen->layout);
 $screen->measureGrid(new Tile(0, 0, 132, 54));
-if ($compact['project']->grid()->height !== 2 || $expanded['status']->leaves()[0]->grid()->height <= 2) {
+if ($compact['name']->grid()->height !== 2 || $expanded['status']->leaves()[0]->grid()->height <= 2) {
   throw new RuntimeException('Switching tiles must collapse the previous one and expand the selected one.');
 }
-$column->replaceChild($compact['project'], $expanded['project']);
+$column->replaceChild($compact['name'], $expanded['name']);
 $screen->setLayout($screen->layout);
-if ($screen->widget('projects') !== $projectWidget) {
+if ($screen->widget('custom-name') !== $nameWidget || $expanded['project']->leaves()[0]->instance() !== $projectWidget) {
   throw new RuntimeException('Switching tiles must retain widget state.');
+}
+$jqlView = new LayoutNode('vertical', '1*', '1*', id: 'filter-jql-mode');
+$jqlView->addLeaf(new LayoutLeaf('Input', '1*', 'auto', $nameWidget));
+$jqlView->addSeparator(new LayoutSeparator());
+$jqlEditor = new TextEditor('status = Open', title: 'JQL');
+$jqlEditor->setId('filter-jql');
+$jqlView->addLeaf(new LayoutLeaf('TextEditor', '1*', '1*', $jqlEditor));
+$middle->replaceChild($column, $jqlView);
+$screen->setLayout($screen->layout);
+if ($screen->widget('custom-name') !== $nameWidget || $screen->widget('filter-jql') !== $jqlEditor || $screen->widget('projects') !== null || $screen->widget('status-options') !== null) {
+  throw new RuntimeException('JQL mode must show the name and query while hiding builder values.');
 }
 $navigation = (new ScreenParser())->parse('filters.xml', new Style(), 'filters', 'Filters');
 $navigation->measureGrid(new Tile(0, 0, 132, 54));
@@ -89,12 +135,13 @@ $window = (new ReflectionClass(Window::class))->newInstanceWithoutConstructor();
 (new ReflectionProperty(Window::class, 'screens'))->setValue($window, [$navigation]);
 (new ReflectionProperty(Controller::class, 'window'))->setValue(null, $window);
 (new ReflectionProperty(Controller::class, 'filterExpanded'))->setValue(null, [
+  'name' => $navigation->layout->findNode('filter-name'),
   'project' => $navigation->layout->findNode('filter-project'),
   'status' => $navigation->layout->findNode('filter-status'),
 ]);
 $right = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_RIGHT, 'mod' => 0]];
 $left = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_LEFT, 'mod' => 0]];
-if (!$navigation->handleEvent($right) || $navigation->selectedLeaf()->instance() !== $navigation->widget('projects')) {
+if (!$navigation->handleEvent($right) || $navigation->selectedLeaf()->instance() !== $navigation->widget('custom-name')) {
   throw new RuntimeException('Right from saved filters must select the expanded tile.');
 }
 $navigation->activateLeaf($navigation->layout->leaves()[0]);
@@ -106,29 +153,5 @@ $actions = $navigation->layout->findNode('filter-actions');
 $navigation->selectLeaf($actions->leaves()[1]);
 if (!$navigation->handleEvent($left) || $navigation->selectedLeaf()->instance() !== $navigation->widget('status-options')) {
   throw new RuntimeException('Left from an action button must select the expanded tile.');
-}
-$slot = $navigation->layout->findNode('updated-from-slot');
-$calendar = $slot->leaves()[0];
-$placeholder = new FilterSummary('From');
-$placeholder->setId('date-placeholder-updated-from');
-$empty = new LayoutLeaf('FilterSummary', '1*', '1*', $placeholder);
-$slot->replaceChild($calendar, $empty);
-(new ReflectionProperty(Controller::class, 'dateSlots'))->setValue(null, [
-  'updated' => ['from' => ['slot' => $slot, 'date' => $calendar, 'empty' => $empty, 'enabled' => false]],
-]);
-(new ReflectionProperty(Controller::class, 'filterWidgets'))->setValue(null, ['updated-date' => $calendar->instance()]);
-$navigation->setLayout($navigation->layout);
-$navigation->measureGrid(new Tile(0, 0, 132, 54));
-$navigation->selectLeaf($empty);
-$enter = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_RETURN, 'mod' => 0]];
-if (!$navigation->handleEvent($enter) || $slot->leaves()[0] !== $calendar) {
-  throw new RuntimeException('Return on an empty date slot must add its calendar.');
-}
-$navigation->setLayout($navigation->layout);
-$navigation->measureGrid(new Tile(0, 0, 132, 54));
-$navigation->activateLeaf($calendar);
-$delete = (object)['type' => SDL::SDL_EVENT_KEY_UP, 'key' => (object)['key' => SDL::KEY_DELETE, 'mod' => 0]];
-if (!$navigation->handleEvent($delete) || $slot->leaves()[0] !== $empty || $navigation->activeLeaf() !== null) {
-  throw new RuntimeException('Delete on an active calendar must empty its date slot.');
 }
 echo "Filters layout OK\n";

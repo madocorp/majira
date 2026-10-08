@@ -10,6 +10,7 @@ use MAJIRA\App\BoardCache;
 use MAJIRA\App\FilterCache;
 use MAJIRA\App\FilterState;
 use MAJIRA\App\JqlBuilder;
+use MAJIRA\App\ProjectCache;
 use MAJIRA\App\Settings;
 use MAJIRA\App\SprintCache;
 use MAJIRA\App\TicketCache;
@@ -32,6 +33,9 @@ class FakeClient extends Client {
 
   public function search(string $jql, array $fields, int $maxResults = 100, string|false $nextPageToken = false): array {
     $this->searches++;
+    if ($jql === 'invalid') {
+      throw new RuntimeException('Invalid JQL');
+    }
     return $nextPageToken === false
       ? ['issues' => [['key' => 'AP-1', 'fields' => ['summary' => 'First']]], 'nextPageToken' => 'page-2']
       : ['issues' => [['key' => 'AP-2', 'fields' => ['summary' => 'Second']]]];
@@ -152,6 +156,7 @@ check(FilterState::normalize(['customJql' => 'text ~ "old"'])['lastJql'] === 'te
 $filters = FilterState::load();
 $filters['lastJql'] = 'text ~ "draft"';
 $filters['customJql'] = $filters['lastJql'];
+$filters['mode'] = 'jql';
 FilterState::save($filters);
 check((new JqlBuilder())->current() === 'text ~ "draft"', 'Edited JQL must become the current query.');
 $filters['customFilters'] = [['name' => 'Saved', 'jql' => 'project = "AP"']];
@@ -163,6 +168,7 @@ check(FilterState::load()['lastJql'] === 'text ~ "draft"', 'Selecting a saved fi
 $filters = FilterState::load();
 $filters['customJql'] = $filters['lastJql'];
 $filters['selectedCustomFilter'] = '';
+$filters['mode'] = 'jql';
 FilterState::save($filters);
 check((new JqlBuilder())->current() === 'text ~ "draft"', 'Last JQL must be restorable after selecting a saved filter.');
 FilterState::save(FilterState::defaults());
@@ -225,8 +231,24 @@ check($fake->details === 2, 'Fresh ticket request did not bypass the cache.');
 $types = $data->issueTypes('AP');
 check(count($types) === 1 && $data->cachedIssueTypes('AP') === $types, 'Issue type cache was not reused.');
 check($data->createTicket('AP', $types[0], 'New task', '') === 'AP-3', 'Ticket creation failed.');
+$data->clearFilterChoices();
+check(ProjectCache::load() === [] && !BoardCache::has('AP') && !SprintCache::has('101') && !FilterCache::load('AP')['_loaded'], 'Filter choice cache clear must remove all choice lists.');
+check(count(TicketCache::load()['issues']) === 2 && $data->cachedIssueTypes('AP') === $types, 'Filter choice cache clear must keep tickets and issue types.');
+$searches = $fake->searches;
+$replacement = $data->tickets('project = "BP"');
+check(count($replacement['issues']) === 1 && $fake->searches === $searches + 1 && TicketCache::load()['state']['jql'] === 'project = "BP"', 'A new JQL search must replace the old result page.');
+try {
+  $data->tickets('invalid');
+  throw new RuntimeException('Invalid JQL was accepted.');
+} catch (RuntimeException $error) {
+  check($error->getMessage() === 'Invalid JQL', 'Unexpected search error.');
+}
+check(TicketCache::load() === [], 'A failed new search must discard the previous ticket result.');
+ProjectCache::save([['key' => 'AP', 'name' => 'Project']]);
+$data->boards('AP');
+$data->sprints('101');
 $data->clearCaches();
-check(!BoardCache::has('AP') && !SprintCache::has('101'), 'Clearing caches must remove board and sprint choices.');
+check(ProjectCache::load() === [] && !BoardCache::has('AP') && !SprintCache::has('101'), 'Clearing all caches must remove filter choices.');
 check(TicketCache::load() === [], 'Ticket cache was not cleared.');
 check($data->cachedIssueTypes('AP') === [], 'Issue type cache was not cleared.');
 foreach (glob($testHome . '/.majira/*') ?: [] as $file) {

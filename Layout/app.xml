@@ -1,9 +1,10 @@
 <App>
   <Event type="init" action="MAJIRA\App\Controller::initialize" />
   <Window title="MaJira" width="132" height="54" mode="maximized" resizable="true">
-    <ScreenSelector screens="list, filters, ticket, settings" />
+    <ScreenSelector screens="list, filters, board, ticket, settings" />
     <Screen id="list" title="List" file="list.xml" />
     <Screen id="filters" title="Filters" file="filters.xml" />
+    <Screen id="board" title="Board" file="board.xml" />
     <Screen id="ticket" title="Ticket" file="ticket.xml" />
     <Screen id="settings" title="Settings" file="settings.xml" />
     <Screen id="create" title="New ticket" file="create.xml" />

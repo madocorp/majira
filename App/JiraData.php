@@ -142,6 +142,9 @@ class JiraData {
     }
     $issues = $more && is_array($cached['issues'] ?? null) ? $cached['issues'] : [];
     $meta = $more && is_array($cached['meta'] ?? null) ? $cached['meta'] : [];
+    if (!$more) {
+      TicketCache::clear();
+    }
     $fields = ['summary', 'status', 'assignee', 'issuetype', 'priority', 'updated'];
     $token = $more ? (string)($meta['nextPageToken'] ?? '') : '';
     $page = $this->client()->search($jql, $fields, 100, $token === '' ? false : $token);
@@ -224,12 +227,17 @@ class JiraData {
     return $key;
   }
 
-  /** Remove every persisted Jira response while leaving settings in place. */
-  public function clearCaches(): void {
+  /** Remove only the choice data used by the Filter screen. */
+  public function clearFilterChoices(): void {
     ProjectCache::clear();
     BoardCache::clear();
     SprintCache::clear();
     FilterCache::clear();
+  }
+
+  /** Remove every persisted Jira response while leaving settings in place. */
+  public function clearCaches(): void {
+    $this->clearFilterChoices();
     TicketCache::clear();
     AppData::saveJson('ticket-details.json', []);
     AppData::saveJson('issue-types.json', []);

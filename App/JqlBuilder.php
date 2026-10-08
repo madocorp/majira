@@ -15,14 +15,17 @@ class JqlBuilder {
     if ($customFilter !== null) {
       return trim((string)$customFilter['jql']);
     }
-    if ((string)$filters['customJql'] !== '') {
+    if ($filters['mode'] === 'builder') {
+      return $this->generated($filters);
+    }
+    if ($filters['customJqlEdited'] || (string)$filters['customJql'] !== '') {
       return trim((string)$filters['customJql']);
     }
     return $this->generated($filters);
   }
 
   public function forEditor(array $filters): string {
-    if ((string)$filters['customJql'] !== '') {
+    if ($filters['customJqlEdited'] || (string)$filters['customJql'] !== '') {
       return (string)$filters['customJql'];
     }
     $customFilter = FilterState::customFilterByName((string)$filters['selectedCustomFilter'], $filters);
