@@ -1,6 +1,24 @@
 <Screen>
+  <Event type="keyDown" key="f5" action="MAJIRA\App\Controller::refreshBoard" />
+  <Event type="keyDown" key="left" action="MAJIRA\App\Controller::boardColumnLeft" />
+  <Event type="keyDown" key="right" action="MAJIRA\App\Controller::boardColumnRight" />
+  <Event type="keyDown" key="up" action="MAJIRA\App\Controller::boardCardUp" />
+  <Event type="keyDown" key="down" action="MAJIRA\App\Controller::boardCardDown" />
   <Layout>
-    <Empty height="1*" />
+    <Layout direction="horizontal" height="1">
+      <Button id="board-project-button" label="Project: Select" action="MAJIRA\App\Controller::openBoardProjects" width="1*" />
+      <Button id="board-board-button" label="Board: Select" action="MAJIRA\App\Controller::openBoardBoards" width="1*" />
+      <Button id="board-sprint-button" label="Sprint: Select" action="MAJIRA\App\Controller::openBoardSprints" width="1*" />
+      <Button label="Refresh" action="MAJIRA\App\Controller::refreshBoard" />
+    </Layout>
+    <Layout id="board-picker-slot" height="0" navigate="false">
+      <Empty id="board-picker-empty" height="0" navigate="false" />
+    </Layout>
+    <Separator />
+    <Layout id="board-body" height="1*">
+      <Text id="board-help" height="1*">Select a project, board and sprint above to load its issues.</Text>
+    </Layout>
+    <Separator />
     <StatusBar id="status" height="1" />
   </Layout>
 </Screen>
