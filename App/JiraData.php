@@ -79,6 +79,28 @@ class JiraData {
     return SprintCache::load($boardId);
   }
 
+  /** Return a cached sprint result or fetch every issue and its column map. */
+  public function boardSprint(string $boardId, string $sprintId, bool $refresh = false): array {
+    $cached = BoardResultCache::load($boardId, $sprintId);
+    if (!$refresh && $cached !== null) {
+      return $cached;
+    }
+    $client = $this->client();
+    $configuration = $client->boardConfiguration((int)$boardId);
+    $issues = [];
+    $start = 0;
+    do {
+      $page = $client->boardSprintIssues((int)$boardId, (int)$sprintId, '', ['summary', 'status', 'assignee'], 100, $start);
+      $batch = is_array($page['issues'] ?? null) ? $page['issues'] : [];
+      $issues = array_merge($issues, $batch);
+      $loaded = count($batch);
+      $start += $loaded;
+    } while ($loaded > 0 && empty($page['isLast']) && ($start < (int)($page['total'] ?? PHP_INT_MAX)) && (isset($page['total']) || $loaded === 100));
+    $result = ['configuration' => $configuration, 'issues' => $issues];
+    BoardResultCache::save($boardId, $sprintId, $result);
+    return $result;
+  }
+
   /** Load project-wide filter choices once, unless explicitly refreshed. */
   public function filterOptions(string $projectKey, bool $refresh = false): array {
     $scope = $projectKey === '' ? 'global' : 'project';
@@ -238,6 +260,7 @@ class JiraData {
   /** Remove every persisted Jira response while leaving settings in place. */
   public function clearCaches(): void {
     $this->clearFilterChoices();
+    BoardResultCache::clear();
     TicketCache::clear();
     AppData::saveJson('ticket-details.json', []);
     AppData::saveJson('issue-types.json', []);

@@ -10,6 +10,7 @@ use SPTK\Events\EventContext;
 use SPTK\Events\EventDefinition;
 use SPTK\Layout\{LayoutLeaf, LayoutNode, LayoutSeparator};
 use SPTK\Widgets\DateSelector\DateSelector;
+use SPTK\Widgets\Button\Button;
 use SPTK\Widgets\Input\Input;
 use SPTK\Widgets\List\ListView;
 use SPTK\Widgets\Table\Table;
@@ -25,6 +26,21 @@ class Controller {
   private static Window $window;
   private static JiraData $data;
   private static array $issues = [];
+  private static ?LayoutNode $boardPickerClosed = null;
+  private static ?LayoutNode $boardPickerOpen = null;
+  private static ?LayoutNode $boardBody = null;
+  private static ?ListView $boardPickerList = null;
+  private static string $boardPickerKind = '';
+  private static ?string $boardPickerSelection = null;
+  private static array $boardIssueKeys = [];
+  private const BOARD_VISIBLE_COLUMNS = 4;
+  private static array $boardColumnLeaves = [];
+  private static array $boardColumnNodes = [];
+  private static array $boardColumnStacks = [];
+  private static array $boardCardIndexes = [];
+  private static array $boardColumnTitles = [];
+  private static int $boardCurrentColumn = 0;
+  private static int $boardViewportStart = 0;
   private static array $meta = [];
   private static array $ticket = [];
   private static string $ticketKey = '';
@@ -51,6 +67,7 @@ class Controller {
     self::$window = array_values(App::eventLoop()->windows())[0];
     self::$data = new JiraData();
     self::prepareListSidebar();
+    self::prepareBoard();
     self::prepareFilterTiles();
     $cached = TicketCache::load();
     self::$issues = is_array($cached['issues'] ?? null) ? $cached['issues'] : [];
@@ -61,6 +78,12 @@ class Controller {
     }
     self::input('list', 'jql')->setValue((new JqlBuilder())->current());
     self::renderNavigation();
+    self::renderBoardSelectors();
+    $boardState = BoardState::load();
+    $cachedBoard = BoardResultCache::load((string)$boardState['boardId'], (string)$boardState['sprintId']);
+    if ($cachedBoard !== null) {
+      self::showBoardResult($cachedBoard, false);
+    }
     self::renderTickets();
     $filters = FilterState::load();
     $selected = FilterState::customFilterByName($filters['selectedCustomFilter'], $filters);
@@ -69,7 +92,7 @@ class Controller {
     } else {
       self::renderFilters();
     }
-    self::status(Settings::isConfigured() ? 'Cached Jira data ready. Refresh for new results.' : 'Set Jira connection in Settings.');
+    self::continuousStatus(Settings::isConfigured() ? 'Cached Jira data ready. Refresh for new results.' : 'Set Jira connection in Settings.');
     if (Settings::isConfigured()) {
       if (ProjectCache::load() === []) {
         self::reloadProjects($event);
@@ -161,6 +184,207 @@ class Controller {
     self::$window->refreshLayout();
   }
 
+  /** Keep the Board picker and column area replaceable without touching List filters. */
+  private static function prepareBoard(): void {
+    $layout = self::$window->screen('board')->layout;
+    self::$boardPickerClosed = $layout->findNode('board-picker-slot');
+    self::$boardBody = $layout->findNode('board-body');
+    if (self::$boardPickerClosed === null || self::$boardBody === null) {
+      throw new \LogicException('Board layout is missing its picker or body.');
+    }
+  }
+
+  public static function openBoardProjects(EventContext $event): void {
+    if (!ProjectCache::load() && Settings::isConfigured() && !self::request('GET projects', fn() => self::$data->projects())) {
+      return;
+    }
+    $items = [['value' => '', 'label' => 'No project selected']];
+    foreach (ProjectCache::load() as $project) {
+      $items[] = ['value' => $project['key'], 'label' => $project['key'] . '  ' . $project['name']];
+    }
+    self::openBoardPicker('project', $items, (string)BoardState::load()['projectKey']);
+  }
+
+  public static function openBoardBoards(EventContext $event): void {
+    $project = (string)BoardState::load()['projectKey'];
+    if ($project === '') {
+      self::status('Choose a Board project first.');
+      return;
+    }
+    if (!BoardCache::has($project) && !self::request('GET boards for ' . $project, fn() => self::$data->boards($project))) {
+      return;
+    }
+    $items = [['value' => '', 'label' => 'No board selected']];
+    foreach (BoardCache::load($project) as $board) {
+      $items[] = ['value' => $board['id'], 'label' => $board['name']];
+    }
+    self::openBoardPicker('board', $items, (string)BoardState::load()['boardId']);
+  }
+
+  public static function openBoardSprints(EventContext $event): void {
+    $board = (string)BoardState::load()['boardId'];
+    if ($board === '') {
+      self::status('Choose a Board board first.');
+      return;
+    }
+    if (!SprintCache::has($board) && !self::request('GET sprints for board ' . $board, fn() => self::$data->sprints($board))) {
+      return;
+    }
+    $items = [['value' => '', 'label' => 'No sprint selected']];
+    foreach (SprintCache::load($board) as $sprint) {
+      $items[] = ['value' => $sprint['id'], 'label' => $sprint['name'] . '  ' . $sprint['state']];
+    }
+    self::openBoardPicker('sprint', $items, (string)BoardState::load()['sprintId']);
+  }
+
+  /** Show one list in the otherwise collapsed row below the selector buttons. */
+  private static function openBoardPicker(string $kind, array $items, string $selected): void {
+    self::closeBoardPicker();
+    $list = new ListView($items, filterable: false, searchable: true, title: ucfirst($kind));
+    if (in_array($selected, $list->values(), true)) {
+      $list->setValue($selected);
+    }
+    $node = new LayoutNode('vertical', '1*', '9');
+    $leaf = new LayoutLeaf('List', '1*', '1*', $list, [
+      new EventDefinition('keyDown', 'enter', self::class . '::chooseBoardPicker'),
+      new EventDefinition('deactivate', null, self::class . '::finishBoardPicker'),
+    ]);
+    $node->addLeaf($leaf);
+    $screen = self::$window->screen('board');
+    if (!$screen->layout->replaceChild(self::$boardPickerClosed, $node)) {
+      throw new \LogicException('Board picker slot is missing.');
+    }
+    self::$boardPickerOpen = $node;
+    self::$boardPickerList = $list;
+    self::$boardPickerKind = $kind;
+    self::$boardPickerSelection = null;
+    $screen->setLayout($screen->layout);
+    self::$window->refreshLayout();
+    $screen->activateLeaf($leaf);
+    self::$window->refreshLayout();
+  }
+
+  /** Return accepts the highlighted value; Escape only closes the picker. */
+  public static function chooseBoardPicker(EventContext $event): bool {
+    self::$boardPickerSelection = self::$boardPickerList?->getValue();
+    self::$window->screen('board')->release('cancel');
+    return true;
+  }
+
+  public static function finishBoardPicker(EventContext $event): void {
+    $kind = self::$boardPickerKind;
+    $selection = self::$boardPickerSelection;
+    self::closeBoardPicker();
+    if ($selection === null || $kind === '') {
+      return;
+    }
+    $state = BoardState::load();
+    $key = match ($kind) {
+      'project' => 'projectKey',
+      'board' => 'boardId',
+      'sprint' => 'sprintId',
+    };
+    if ($state[$key] === $selection) {
+      return;
+    }
+    $state[$key] = $selection;
+    if ($kind === 'project') {
+      $state['boardId'] = '';
+      $state['sprintId'] = '';
+    } else if ($kind === 'board') {
+      $state['sprintId'] = '';
+    }
+    BoardState::save($state);
+    self::renderBoardSelectors();
+    self::clearBoardBody();
+    if ($kind === 'sprint' && $selection !== '') {
+      self::loadBoard(false);
+    }
+  }
+
+  private static function closeBoardPicker(): void {
+    if (self::$boardPickerOpen === null) {
+      return;
+    }
+    $screen = self::$window->screen('board');
+    $open = self::$boardPickerOpen;
+    $kind = self::$boardPickerKind;
+    self::$boardPickerOpen = null;
+    self::$boardPickerList = null;
+    self::$boardPickerKind = '';
+    self::$boardPickerSelection = null;
+    if (!$screen->layout->replaceChild($open, self::$boardPickerClosed)) {
+      throw new \LogicException('Open Board picker is missing.');
+    }
+    $screen->setLayout($screen->layout);
+    $button = $screen->widget('board-' . $kind . '-button');
+    foreach ($screen->layout->leaves() as $leaf) {
+      if ($leaf->instance() === $button) {
+        $screen->selectLeaf($leaf);
+        break;
+      }
+    }
+    self::$window->refreshLayout();
+  }
+
+  private static function renderBoardSelectors(): void {
+    $state = BoardState::load();
+    $project = (string)$state['projectKey'];
+    $board = (string)$state['boardId'];
+    $sprint = (string)$state['sprintId'];
+    $projectLabel = $project ?: 'Select';
+    $boardLabel = $board ?: 'Select';
+    foreach (BoardCache::load($project) as $row) {
+      if ($row['id'] === $board) {
+        $boardLabel = $row['name'];
+        break;
+      }
+    }
+    $sprintLabel = $sprint ?: 'Select';
+    foreach (SprintCache::load($board) as $row) {
+      if ($row['id'] === $sprint) {
+        $sprintLabel = $row['name'];
+        break;
+      }
+    }
+    foreach (['project' => $projectLabel, 'board' => $boardLabel, 'sprint' => $sprintLabel] as $kind => $label) {
+      $button = self::$window->screen('board')->widget('board-' . $kind . '-button');
+      if ($button instanceof Button) {
+        $button->setLabel(ucfirst($kind) . ': ' . $label);
+      }
+    }
+  }
+
+  private static function clearBoardBody(string $message = 'Select a project, board and sprint above to load its issues.'): void {
+    if (self::boardCardLocation(self::$window->screen('board')->activeLeaf()) !== null) {
+      self::$window->screen('board')->release('cancel');
+    }
+    self::$boardIssueKeys = [];
+    self::$boardColumnLeaves = [];
+    self::$boardColumnNodes = [];
+    self::$boardColumnStacks = [];
+    self::$boardCardIndexes = [];
+    self::$boardColumnTitles = [];
+    self::$boardCurrentColumn = 0;
+    self::$boardViewportStart = 0;
+    self::$window->screen('board')->statusBar->clear();
+    self::replaceBoardBody(new Text($message));
+  }
+
+  private static function replaceBoardBody(Text|LayoutNode $content): void {
+    $node = $content instanceof LayoutNode ? $content : new LayoutNode('vertical', '1*', '1*');
+    if ($content instanceof Text) {
+      $node->addLeaf(new LayoutLeaf('Text', '1*', '1*', $content));
+    }
+    $screen = self::$window->screen('board');
+    if (!$screen->layout->replaceChild(self::$boardBody, $node)) {
+      throw new \LogicException('Board body is missing.');
+    }
+    self::$boardBody = $node;
+    $screen->setLayout($screen->layout);
+    self::$window->refreshLayout();
+  }
+
   /** Remember the item chosen by Return before the list clears its search query. */
   public static function selectSidebarFilter(EventContext $event): void {
     $value = self::list('list', 'sidebar-filters')->getValue();
@@ -200,6 +424,277 @@ class Controller {
   public static function refreshTickets(EventContext $event): void {
     if (self::loadTickets(false)) {
       self::reportTicketCount();
+    }
+  }
+
+  /** Load the selected sprint with columns defined by its board. */
+  public static function refreshBoard(EventContext $event): void {
+    self::loadBoard(true);
+  }
+
+  /** Use a saved sprint result on selection, or request fresh data. */
+  private static function loadBoard(bool $refresh): void {
+    $state = BoardState::load();
+    $board = (string)$state['boardId'];
+    $sprint = (string)$state['sprintId'];
+    if ($board === '' || $sprint === '') {
+      self::status('Select a board and sprint above first.');
+      return;
+    }
+    if (!$refresh && ($cached = BoardResultCache::load($board, $sprint)) !== null) {
+      self::showBoardResult($cached);
+      return;
+    }
+    self::request('GET board ' . $board . ' sprint ' . $sprint, function() use ($board, $sprint): void {
+      self::showBoardResult(self::$data->boardSprint($board, $sprint, true));
+    });
+  }
+
+  /** Render the configured columns and optional result message. */
+  private static function showBoardResult(array $result, bool $announce = true): void {
+    $columns = BoardView::columns($result['configuration'], $result['issues']);
+    if ($columns === []) {
+      if (self::boardCardLocation(self::$window->screen('board')->activeLeaf()) !== null) {
+        self::$window->screen('board')->release('cancel');
+      }
+      self::$boardIssueKeys = [];
+      self::$boardColumnLeaves = [];
+      self::$boardColumnNodes = [];
+      self::$boardColumnStacks = [];
+      self::$boardCardIndexes = [];
+      self::$boardColumnTitles = [];
+      self::$boardCurrentColumn = 0;
+      self::$boardViewportStart = 0;
+      self::$window->screen('board')->statusBar->clear();
+      self::replaceBoardBody(new Text('This sprint has no issues or board columns.'));
+      return;
+    }
+    self::renderBoardColumns($columns);
+    if ($announce) {
+      self::backgroundStatus('Loaded ' . count($result['issues']) . ' sprint issues in ' . count($columns) . ' columns.');
+    }
+  }
+
+  /** Build fixed-height issue tiles and keep each column's scroll position. */
+  private static function renderBoardColumns(array $columns): void {
+    $screen = self::$window->screen('board');
+    $selected = self::boardCardLocation($screen->selectedLeaf());
+    $active = $selected !== null && $screen->activeLeaf() === $screen->selectedLeaf();
+    if ($active) {
+      $screen->release('cancel');
+    }
+    $previousIndexes = self::$boardCardIndexes;
+    $previousOffsets = array_map(fn(LayoutNode $node): int => $node->scrollOffset(), self::$boardColumnStacks);
+    self::$boardIssueKeys = [];
+    self::$boardColumnLeaves = [];
+    self::$boardColumnNodes = [];
+    self::$boardColumnStacks = [];
+    self::$boardCardIndexes = [];
+    self::$boardColumnTitles = [];
+    $cardSeparatorColor = (new Style())->background->darkened(0.6);
+    foreach ($columns as $columnIndex => $column) {
+      self::$boardColumnTitles[] = (string)$column['name'];
+      $cards = [];
+      foreach ($column['issues'] as $issue) {
+        $key = (string)($issue['key'] ?? '');
+        if ($key === '') {
+          continue;
+        }
+        $summary = trim((string)($issue['fields']['summary'] ?? ''));
+        $assignee = trim((string)($issue['fields']['assignee']['displayName'] ?? ''));
+        $card = new BoardTicketCard($key, $summary, $assignee);
+        $cards[] = new LayoutLeaf('BoardTicketCard', '1*', (string)BoardTicketCard::HEIGHT, $card, [
+          new EventDefinition('activate', null, self::class . '::openBoardIssue'),
+          new EventDefinition('select', null, self::class . '::boardColumnSelected'),
+        ]);
+        self::$boardIssueKeys[$key] = true;
+      }
+      $issueCount = count($cards);
+      if ($cards === []) {
+        $cards[] = new LayoutLeaf('BoardTicketCard', '1*', (string)BoardTicketCard::HEIGHT, new BoardTicketCard('', 'No tickets', ''), [
+          new EventDefinition('select', null, self::class . '::boardColumnSelected'),
+        ]);
+      }
+      $stack = new LayoutNode('vertical', '1*', '1*');
+      $stack->setSeparatorColor($cardSeparatorColor);
+      $stack->setOverflow(true);
+      $stack->setScrollOffset($previousOffsets[$columnIndex] ?? 0);
+      foreach ($cards as $index => $card) {
+        if ($index > 0 && $issueCount > 0) {
+          $stack->addSeparator(new LayoutSeparator());
+        }
+        $stack->addLeaf($card);
+      }
+      $stack->addLeaf(new LayoutLeaf('BoardColumnFill', '1*', '4', new BoardColumnFill(), [], false));
+      $stack->addLeaf(new LayoutLeaf('BoardColumnFill', '1*', '1*', new BoardColumnFill(), [], false));
+      $node = new LayoutNode('vertical', '1*', '1*');
+      $node->addLeaf(new LayoutLeaf('BoardColumnHeader', '1*', '1', new BoardColumnHeader((string)$column['name'], $issueCount, $cards), [], false));
+      $node->addNode($stack);
+      self::$boardColumnLeaves[] = $cards;
+      self::$boardColumnNodes[] = $node;
+      self::$boardColumnStacks[] = $stack;
+      self::$boardCardIndexes[] = min($previousIndexes[$columnIndex] ?? 0, count($cards) - 1);
+    }
+    self::$boardViewportStart = min(self::$boardViewportStart, max(0, count(self::$boardColumnNodes) - self::BOARD_VISIBLE_COLUMNS));
+    self::$boardCurrentColumn = min(self::$boardCurrentColumn, count(self::$boardColumnNodes) - 1);
+    if ($selected !== null) {
+      [$columnIndex, $cardIndex] = $selected;
+      $columnIndex = min($columnIndex, count(self::$boardColumnNodes) - 1);
+      self::$boardCurrentColumn = $columnIndex;
+      self::$boardCardIndexes[$columnIndex] = min($cardIndex, count(self::$boardColumnLeaves[$columnIndex]) - 1);
+      self::$boardViewportStart = min(self::$boardViewportStart, $columnIndex);
+      self::$boardViewportStart = max(self::$boardViewportStart, $columnIndex - self::BOARD_VISIBLE_COLUMNS + 1);
+    }
+    self::renderBoardViewport();
+    if ($selected !== null) {
+      $leaf = self::$boardColumnLeaves[self::$boardCurrentColumn][self::$boardCardIndexes[self::$boardCurrentColumn]];
+      if ($active) {
+        $screen->activateLeaf($leaf);
+      } else {
+        $screen->selectLeaf($leaf);
+      }
+      self::ensureBoardCardVisible(self::$boardCurrentColumn, self::$boardCardIndexes[self::$boardCurrentColumn]);
+      self::$window->refreshLayout();
+    }
+  }
+
+  /** Display at most four columns while retaining every column's list. */
+  private static function renderBoardViewport(): void {
+    $start = self::$boardViewportStart;
+    $visible = array_slice(self::$boardColumnNodes, $start, self::BOARD_VISIBLE_COLUMNS);
+    $columns = new LayoutNode('horizontal', '1*', '1*');
+    foreach ($visible as $index => $node) {
+      $columns->addNode($node);
+      if ($index < count($visible) - 1) {
+        $columns->addSeparator(new LayoutSeparator());
+      }
+    }
+    self::replaceBoardBody($columns);
+    self::updateBoardStatusMap();
+  }
+
+  /** Show all board columns in a passive status message. */
+  private static function updateBoardStatusMap(): void {
+    $titles = [];
+    foreach (self::$boardColumnTitles as $index => $title) {
+      $label = trim(preg_replace('/\s+/', ' ', $title));
+      $titles[] = $index === self::$boardCurrentColumn ? '** ' . $label . ' **' : $label;
+    }
+    self::$window->screen('board')->statusBar->notice(implode(' | ', $titles), 'continuous');
+  }
+
+  /** Find the column and card index of a board tile. */
+  private static function boardCardLocation(?LayoutLeaf $target): ?array {
+    if ($target === null) {
+      return null;
+    }
+    foreach (self::$boardColumnLeaves as $column => $cards) {
+      $index = array_search($target, $cards, true);
+      if ($index !== false) {
+        return [$column, $index];
+      }
+    }
+    return null;
+  }
+
+  /** Shift the card stack by whole cards until the chosen card is visible. */
+  private static function ensureBoardCardVisible(int $column, int $index): void {
+    $stack = self::$boardColumnStacks[$column];
+    $height = $stack->grid()->height;
+    $slots = max(1, intdiv(max(0, $height) + 1, BoardTicketCard::HEIGHT + 1));
+    $top = intdiv($stack->scrollOffset(), BoardTicketCard::HEIGHT + 1);
+    if ($index < $top) {
+      $top = $index;
+    } else if ($index >= $top + $slots) {
+      $top = $index - $slots + 1;
+    } else {
+      return;
+    }
+    $stack->setScrollOffset($top * (BoardTicketCard::HEIGHT + 1));
+    self::$window->refreshLayout();
+  }
+
+  /** Move between board columns, shifting the four-column viewport at an edge. */
+  private static function moveBoardColumn(int $step): bool {
+    $screen = self::$window->screen('board');
+    $location = self::boardCardLocation($screen->selectedLeaf());
+    if ($location === null) {
+      return false;
+    }
+    [$current] = $location;
+    $next = $current + $step;
+    if (!isset(self::$boardColumnNodes[$next])) {
+      return false;
+    }
+    self::$boardCurrentColumn = $next;
+    if ($next < self::$boardViewportStart) {
+      self::$boardViewportStart = $next;
+      self::renderBoardViewport();
+    } else if ($next >= self::$boardViewportStart + self::BOARD_VISIBLE_COLUMNS) {
+      self::$boardViewportStart = $next - self::BOARD_VISIBLE_COLUMNS + 1;
+      self::renderBoardViewport();
+    }
+    $targetIndex = self::$boardCardIndexes[$next];
+    $screen->selectLeaf(self::$boardColumnLeaves[$next][$targetIndex]);
+    self::ensureBoardCardVisible($next, $targetIndex);
+    self::updateBoardStatusMap();
+    return true;
+  }
+
+  public static function boardColumnLeft(EventContext $event): bool {
+    return self::moveBoardColumn(-1);
+  }
+
+  public static function boardColumnRight(EventContext $event): bool {
+    return self::moveBoardColumn(1);
+  }
+
+  /** Move between cards within a column and scroll at its visible edge. */
+  private static function moveBoardCard(int $step): bool {
+    $screen = self::$window->screen('board');
+    $location = self::boardCardLocation($screen->selectedLeaf());
+    if ($location === null) {
+      return false;
+    }
+    [$column, $index] = $location;
+    $next = $index + $step;
+    if (!isset(self::$boardColumnLeaves[$column][$next])) {
+      return $step > 0;
+    }
+    self::$boardCardIndexes[$column] = $next;
+    $screen->selectLeaf(self::$boardColumnLeaves[$column][$next]);
+    self::ensureBoardCardVisible($column, $next);
+    return true;
+  }
+
+  public static function boardCardUp(EventContext $event): bool {
+    return self::moveBoardCard(-1);
+  }
+
+  public static function boardCardDown(EventContext $event): bool {
+    return self::moveBoardCard(1);
+  }
+
+  /** Track the selected card and its column for horizontal navigation. */
+  public static function boardColumnSelected(EventContext $event): void {
+    foreach (self::$boardColumnLeaves as $column => $cards) {
+      foreach ($cards as $index => $leaf) {
+        if ($leaf->instance() === $event->widget) {
+          self::$boardCurrentColumn = $column;
+          self::$boardCardIndexes[$column] = $index;
+          self::ensureBoardCardVisible($column, $index);
+          self::updateBoardStatusMap();
+          return;
+        }
+      }
+    }
+  }
+
+  /** Open a card in the existing Ticket screen. */
+  public static function openBoardIssue(EventContext $event): void {
+    $key = $event->widget instanceof BoardTicketCard ? $event->widget->key() : null;
+    if (is_string($key) && isset(self::$boardIssueKeys[$key])) {
+      self::openTicket($key);
     }
   }
 
@@ -311,7 +806,7 @@ class Controller {
     self::loadMissingNavigationChoices(true);
     self::renderFilterOptions();
     self::saveGeneratedFilter($event);
-    self::status('Project: ' . ($value === '' ? 'Any project' : $value));
+    self::continuousStatus('Project: ' . ($value === '' ? 'Any project' : $value));
     self::refreshFilterSummaries();
   }
 
@@ -329,7 +824,7 @@ class Controller {
     self::loadMissingNavigationChoices();
     self::renderFilterOptions();
     self::saveGeneratedFilter($event);
-    self::status('Board for sprint choices: ' . ($value ?: 'None selected'));
+    self::continuousStatus('Board for sprint choices: ' . ($value ?: 'None selected'));
     self::refreshFilterSummaries();
   }
 
@@ -344,13 +839,13 @@ class Controller {
     Settings::save($settings);
     self::renderNavigation();
     self::saveGeneratedFilter($event);
-    self::status('Sprint: ' . ($value ?: 'Any sprint'));
+    self::continuousStatus('Sprint: ' . ($value ?: 'Any sprint'));
     self::refreshFilterSummaries();
   }
 
   /** Refresh the project cache from Jira. */
-  public static function reloadProjects(EventContext $event): void {
-    self::request('GET projects', function(): void {
+  public static function reloadProjects(EventContext $event): bool {
+    return self::request('GET projects', function(): void {
       self::$data->projects();
       self::renderNavigation();
     });
@@ -406,6 +901,9 @@ class Controller {
     self::input('settings', 'jira-token')->setValue('');
     if ($changed) {
       self::$data->clearCaches();
+      BoardState::save([]);
+      self::renderBoardSelectors();
+      self::clearBoardBody();
       TicketHistory::clear();
       $settings['projectKey'] = '';
       $settings['boardId'] = '';
@@ -417,10 +915,10 @@ class Controller {
       self::renderTickets();
       self::input('list', 'jql')->setValue((new JqlBuilder())->current());
     }
-    self::status('Jira connection saved.');
-    if ($changed) {
-      self::reloadProjects($event);
+    if ($changed && !self::reloadProjects($event)) {
+      return;
     }
+    self::status('Jira connection saved.');
   }
 
   /** Test the saved Jira connection. */
@@ -436,6 +934,11 @@ class Controller {
     self::$data->clearCaches();
     self::$issues = [];
     self::$meta = [];
+    $boardState = BoardState::load();
+    $boardMessage = $boardState['boardId'] !== '' && $boardState['sprintId'] !== ''
+      ? 'Board cache cleared. Press F5 to reload this sprint.'
+      : 'Select a project, board and sprint above to load its issues.';
+    self::clearBoardBody($boardMessage);
     self::renderNavigation();
     self::renderTickets();
     self::status('Jira caches cleared.');
@@ -852,9 +1355,9 @@ class Controller {
   private static function reportTicketCount(): void {
     $count = count(self::$issues);
     if (!empty(self::$meta['hasMore'])) {
-      self::status('Showing ' . $count . ' tickets; more available (M: next page).');
+      self::listTicketStatus('Showing ' . $count . ' tickets; more available (M: next page).');
     } else {
-      self::status($count === 0 ? 'No tickets found.' : 'Showing all ' . $count . ' tickets.');
+      self::listTicketStatus($count === 0 ? 'No tickets found.' : 'Showing all ' . $count . ' tickets.');
     }
     self::$window->refreshLayout();
   }
@@ -886,11 +1389,14 @@ class Controller {
 
   /** Paint request activity before synchronous Jira I/O. */
   private static function request(string $label, callable $operation): bool {
-    self::status($label . ' ...');
+    self::progressStatus($label . ' ...');
     self::$window->refreshLayout();
     try {
       $operation();
-      self::status($label . ' complete.');
+      $bar = self::$window->screen(self::$window->currentScreenId())?->statusBar;
+      if ($bar?->locked() || !in_array($bar?->behavior(), ['modal', 'confirmation', 'background'], true)) {
+        self::backgroundStatus($label . ' complete.');
+      }
     } catch (\Throwable $error) {
       self::status($label . ' failed: ' . $error->getMessage(), true);
       self::$window->refreshLayout();
@@ -900,12 +1406,40 @@ class Controller {
     return true;
   }
 
-  /** Notify every screen through its built-in status bar. */
+  /** Show an action result or error until the user acknowledges it. */
   private static function status(string $message, bool $error = false): void {
+    $activeScreen = self::$window->currentScreenId();
     foreach (['list', 'filters', 'board', 'ticket', 'settings', 'create'] as $screen) {
       $bar = self::$window->screen($screen)?->statusBar;
-      $error ? $bar?->error($message) : $bar?->notify($message);
+      if ($screen !== $activeScreen) {
+        continue;
+      }
+      if ($error) {
+        $bar?->error($message);
+      } else {
+        $bar?->notice($message);
+      }
     }
+  }
+
+  /** Keep guidance on the current screen after temporary messages. */
+  private static function continuousStatus(string $message): void {
+    self::$window->screen(self::$window->currentScreenId())?->statusBar?->notice($message, 'continuous');
+  }
+
+  /** Keep pagination guidance on List even when another screen is active. */
+  private static function listTicketStatus(string $message): void {
+    self::$window->screen('list')?->statusBar?->notice($message, 'continuous');
+  }
+
+  /** Block input during synchronous Jira communication. */
+  private static function progressStatus(string $message): void {
+    self::$window->screen(self::$window->currentScreenId())?->statusBar?->info($message, 'modal', lock: true);
+  }
+
+  /** Show a short-lived completion message without moving focus. */
+  private static function backgroundStatus(string $message): void {
+    self::$window->screen(self::$window->currentScreenId())?->statusBar?->info($message, 'background');
   }
 
   /** Populate project, board and sprint tiles from caches. */
