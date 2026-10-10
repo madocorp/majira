@@ -1,24 +1,26 @@
 <Screen>
   <Layout>
-    <Title height="1">MaJira connection</Title>
-    <Separator />
     <Layout direction="horizontal" height="1*">
-      <Layout width="48">
+      <Layout id="settings-left" width="48">
+        <Image id="settings-logo" src="../Assets/majira.png" fit="contain" interactive="false" navigate="false" />
+        <Separator />
         <Input id="jira-site" label="Jira site (https://example.atlassian.net)" />
         <Input id="jira-email" label="Email" />
         <Input id="jira-token" label="New API token (blank keeps saved token)" />
-        <Button label="Save connection" action="MAJIRA\App\Controller::saveSettings" />
-        <Button label="Test connection" action="MAJIRA\App\Controller::testConnection" />
-        <Button label="Clear caches" action="MAJIRA\App\Controller::clearCaches" />
-        <Button label="Quit" action="MAJIRA\App\Controller::quit" />
+        <Button id="settings-test" label="Test connection" hotkey="t" action="MAJIRA\App\Controller::testConnection" />
+        <Button id="settings-save" label="Save connection" hotkey="s" action="MAJIRA\App\Controller::saveSettings" />
         <Empty height="1*" />
+        <Button id="settings-clear" label="Clear cache" hotkey="r" action="MAJIRA\App\Controller::clearCaches" />
+        <Button id="settings-quit" label="Quit" hotkey="q" action="MAJIRA\App\Controller::quit" />
       </Layout>
       <Separator />
-      <Layout width="1*">
-        <Image src="../Assets/majira.png" fit="contain" interactive="false" height="1*" />
-        <Text height="5">Browse cached Jira tickets, then refresh when you want new data. Select a project, board and sprint on the Filters screen. The status bar shows active Jira requests.</Text>
+      <Layout id="settings-right" width="1*">
+        <Text id="settings-about" title="About MaJira" height="6">MaJira is a tile based Jira Cloud browser built with SPTK. Browse cached tickets, search with filters or JQL, inspect a board, and open ticket details. Jira requests are shown in the status bar.</Text>
+        <Separator />
+        <Text id="settings-unlicense" title="Unlicense" height="1*" />
       </Layout>
     </Layout>
+    <Separator />
     <StatusBar id="status" height="1" />
   </Layout>
 </Screen>

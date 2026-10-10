@@ -23,6 +23,7 @@ use SPTK\Layout\{LayoutNode, LayoutSeparator, Tile};
 use SPTK\Rendering\{Font, Grid, GridWriter};
 use SPTK\SDLWrapper\{SDL, TTF};
 use SPTK\Widgets\List\ListView;
+use SPTK\Widgets\Button\Button;
 use SPTK\XmlParser\ScreenParser;
 
 function boardCheck(bool $condition, string $message): void {
@@ -74,10 +75,11 @@ $client = new class extends Client {
   }
   public function boardSprintIssues(int $boardId, int $sprintId, string $jql, array $fields, int $maxResults = 100, int $startAt = 0): array {
     boardCheck($boardId === 7 && $sprintId === 70 && $jql === '', 'Wrong sprint issue scope.');
+    boardCheck(in_array('issuetype', $fields, true), 'Board requests must include issue types.');
     $this->starts[] = $startAt;
     return $startAt === 0
-      ? ['issues' => [['key' => 'BOARD-1', 'fields' => ['summary' => 'First', 'status' => ['id' => '2', 'name' => 'Ready']]]], 'total' => 2]
-      : ['issues' => [['key' => 'BOARD-2', 'fields' => ['summary' => 'Second', 'status' => ['id' => '3', 'name' => 'Done']]]], 'total' => 2];
+      ? ['issues' => [['key' => 'BOARD-1', 'fields' => ['summary' => 'First', 'status' => ['id' => '2', 'name' => 'Ready'], 'issuetype' => ['name' => 'Task']]]], 'total' => 2]
+      : ['issues' => [['key' => 'BOARD-2', 'fields' => ['summary' => 'Second', 'status' => ['id' => '3', 'name' => 'Done'], 'issuetype' => ['name' => 'Bug']]]], 'total' => 2];
   }
 };
 $data = new class($client) extends JiraData {
@@ -94,11 +96,20 @@ boardCheck(!BoardResultCache::has('8', '70'), 'Board results are scoped by board
 $columns = BoardView::columns($result['configuration'], $result['issues']);
 boardCheck(array_column($columns, 'name') === ['To Do', 'Done'], 'Board column order must follow Jira configuration.');
 boardCheck($columns[0]['issues'][0]['key'] === 'BOARD-1' && $columns[1]['issues'][0]['key'] === 'BOARD-2', 'Issues must use their mapped status columns.');
+boardCheck(array_column(BoardView::columns($result['configuration'], [$result['issues'][0]]), 'name') === ['To Do'], 'Board grouping omits configured columns without issues.');
+boardCheck(BoardView::columns($result['configuration'], []) === [], 'An empty sprint has no visible columns.');
 $sampleCard = new BoardTicketCard('AP-1234', 'Wrapped title', 'Jane Smith');
 $cardGrid = new Grid(12, 4);
 $sampleCard->paint(new GridWriter($cardGrid, new Tile(0, 0, 12, 4)));
 boardCheck(str_contains(boardRow($cardGrid, 0, 0, 12), '#AP-1234') && str_contains(boardRow($cardGrid, 0, 1, 12), 'Wrapped') && str_contains(boardRow($cardGrid, 0, 2, 12), 'title') && str_contains(boardRow($cardGrid, 0, 3, 12), 'Jane Smith'), 'A ticket card shows its key, wrapped summary, and full assignee name.');
 boardCheck((array)$cardGrid->cell(0, 0)->bg === (array)(new Style())->background, 'Ticket cards use the default tile background.');
+$typedCard = new BoardTicketCard('AP-1234', 'Summary', 'Jane Smith', 'Sub-task');
+$typedGrid = new Grid(20, 4);
+$typedCard->paint(new GridWriter($typedGrid, new Tile(0, 0, 20, 4)));
+boardCheck(str_contains(boardRow($typedGrid, 0, 0, 20), '#AP-1234') && str_ends_with(rtrim(boardRow($typedGrid, 0, 0, 20)), 'Sub-task'), 'Issue type is right aligned beside the key.');
+$narrowGrid = new Grid(16, 4);
+$typedCard->paint(new GridWriter($narrowGrid, new Tile(0, 0, 16, 4)));
+boardCheck(str_contains(boardRow($narrowGrid, 0, 0, 16), '#AP-1234') && str_ends_with(rtrim(boardRow($narrowGrid, 0, 0, 16)), 'Sub-…'), 'Long issue types are shortened without covering the key.');
 
 $screen = (new ScreenParser())->parse('board.xml', new Style(), 'board', 'Board');
 $listScreen = (new ScreenParser())->parse('list.xml', new Style(), 'list', 'List');
@@ -108,6 +119,10 @@ boardCheck($screen->widget('board-help') !== null && $screen->layout->findNode('
 foreach (['project', 'board', 'sprint'] as $kind) {
   boardCheck($screen->widget('board-' . $kind . '-button') !== null, 'Missing Board selector: ' . $kind);
 }
+$selectorRow = (new ReflectionProperty(LayoutNode::class, 'children'))->getValue($screen->layout)[0];
+$selectorChildren = (new ReflectionProperty(LayoutNode::class, 'children'))->getValue($selectorRow);
+boardCheck(count(array_filter($selectorChildren, fn($child) => $child instanceof LayoutSeparator)) === 2, 'Board selectors need separators between them.');
+boardCheck(count(array_filter($selectorChildren, fn($child) => $child instanceof \SPTK\Layout\LayoutLeaf && $child->instance() instanceof Button)) === 3, 'Board selector row has no Refresh button.');
 boardCheck(!in_array($screen->statusBar, array_map(fn($leaf) => $leaf->instance(), $screen->layout->movementLeaves()), true), 'Status bar must not take ordinary arrow focus.');
 
 ProjectCache::save([['key' => 'BOARD', 'name' => 'Board project']]);
@@ -128,6 +143,7 @@ $window = new Window([
   'title' => 'Board focus test', 'width' => 80, 'height' => 20,
   'state' => 'hidden', 'resizable' => false, 'screens' => [$screen, $listScreen],
 ]);
+$screen->statusBar->setScheduler(static function(int $delayMs, callable $callback): void {});
 try {
   (new ReflectionProperty(Controller::class, 'window'))->setValue(null, $window);
   (new ReflectionMethod(Controller::class, 'prepareBoard'))->invoke(null);
@@ -160,6 +176,10 @@ try {
   Controller::openBoardSprints(new EventContext('activate'));
   $screen->handleEvent($enter);
   boardCheck($screen->selectedLeaf()?->instance() === $screen->widget('board-sprint-button'), 'Choosing a sprint must restore sprint button focus.');
+  $loadedCard = (new ReflectionProperty(Controller::class, 'boardColumnLeaves'))->getValue()[0][0]->instance();
+  $loadedGrid = new Grid(24, 4);
+  $loadedCard->paint(new GridWriter($loadedGrid, new Tile(0, 0, 24, 4)));
+  boardCheck(str_ends_with(rtrim(boardRow($loadedGrid, 0, 0, 24)), 'Task'), 'A loaded Board issue passes its Jira type to the card.');
 
   $wideColumns = [];
   for ($index = 0; $index < 7; $index++) {
@@ -191,6 +211,25 @@ try {
   boardCheck((array)$painted->cell($leaves[0][0]->grid()->x, 2)->bg === (array)(new Style())->background->darkened(), 'Unselected column headings use the dimmed tile background.');
   $window->refreshLayout();
   $screen->selectLeaf($leaves[0][0]);
+  $pageDown = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_PAGEDOWN, 'mod' => 0, 'repeat' => false]];
+  $pageUp = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_PAGEUP, 'mod' => 0, 'repeat' => false]];
+  $slots = max(1, intdiv($firstStack->grid()->height + 1, BoardTicketCard::HEIGHT + 1));
+  boardCheck($slots >= 2 && 2 * $slots <= count($leaves[0]), 'Paging fixture needs at least two visible card pages.');
+  $screen->handleEvent($pageDown);
+  boardCheck($screen->selectedLeaf() === $leaves[0][$slots - 1] && $firstStack->scrollOffset() === 0, 'PgDown first selects the last visible card.');
+  $screen->handleEvent($pageDown);
+  boardCheck($screen->selectedLeaf() === $leaves[0][2 * $slots - 1] && $firstStack->scrollOffset() === $slots * (BoardTicketCard::HEIGHT + 1), 'PgDown again advances to the next page.');
+  $screen->handleEvent($pageUp);
+  boardCheck($screen->selectedLeaf() === $leaves[0][$slots] && $firstStack->scrollOffset() === $slots * (BoardTicketCard::HEIGHT + 1), 'PgUp first selects the first visible card.');
+  $screen->handleEvent($pageUp);
+  boardCheck($screen->selectedLeaf() === $leaves[0][0] && $firstStack->scrollOffset() === 0, 'PgUp again returns to the previous page.');
+  $screen->selectLeaf($leaves[1][0]);
+  $screen->handleEvent($pageDown);
+  $screen->handleEvent($pageDown);
+  boardCheck($screen->selectedLeaf() === $leaves[1][1] && $firstStack->scrollOffset() === 0, 'Paging stays within the current column and stops at its last card.');
+  $screen->handleEvent($pageUp);
+  $screen->handleEvent($pageUp);
+  boardCheck($screen->selectedLeaf() === $leaves[1][0], 'PgUp stops at the first card of a short column.');
   $down = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_DOWN, 'mod' => 0, 'repeat' => false]];
   $screen->selectLeaf($leaves[0][7]);
   $screen->handleEvent($down);
@@ -236,6 +275,24 @@ try {
   $left = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_LEFT, 'mod' => 0, 'repeat' => false]];
   $screen->handleEvent($left);
   boardCheck($screen->selectedLeaf() === $leaves[1][0] && str_contains($screen->statusBar->text(), '** Stage 2 **') && (new ReflectionProperty(Controller::class, 'boardViewportStart'))->getValue() === 1, 'Left at the viewport edge reveals and highlights the preceding column.');
+  $home = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_HOME, 'mod' => 0, 'repeat' => false]];
+  $end = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_END, 'mod' => 0, 'repeat' => false]];
+  $screen->selectLeaf($leaves[3][0]);
+  $screen->handleEvent($home);
+  boardCheck($screen->selectedLeaf() === $leaves[1][0] && (new ReflectionProperty(Controller::class, 'boardViewportStart'))->getValue() === 1, 'Home first selects the first visible column.');
+  $screen->handleEvent($home);
+  boardCheck($screen->selectedLeaf() === $leaves[0][8] && (new ReflectionProperty(Controller::class, 'boardViewportStart'))->getValue() === 0, 'Home again moves to the previous column page and restores its card.');
+  $screen->handleEvent($home);
+  boardCheck($screen->selectedLeaf() === $leaves[0][8], 'Home stops at the first column.');
+  $screen->handleEvent($end);
+  boardCheck($screen->selectedLeaf() === $leaves[3][0] && (new ReflectionProperty(Controller::class, 'boardViewportStart'))->getValue() === 0, 'End first selects the last visible column.');
+  $screen->handleEvent($end);
+  boardCheck($screen->selectedLeaf() === $leaves[6][0] && (new ReflectionProperty(Controller::class, 'boardViewportStart'))->getValue() === 3, 'End again moves to the next column page.');
+  $screen->handleEvent($end);
+  boardCheck($screen->selectedLeaf() === $leaves[6][0], 'End stops at the last column.');
+  $screen->handleEvent($home);
+  $screen->handleEvent($home);
+  $screen->selectLeaf($leaves[1][0]);
   (new ReflectionMethod(Controller::class, 'renderBoardColumns'))->invoke(null, $wideColumns);
   $refreshedLeaves = (new ReflectionProperty(Controller::class, 'boardColumnLeaves'))->getValue();
   boardCheck($screen->selectedLeaf() === $refreshedLeaves[1][0] && $window->currentScreenId() === 'board', 'Refreshing a board column preserves its selected card.');
@@ -255,6 +312,66 @@ try {
   (new ReflectionProperty(Controller::class, 'data'))->setValue(null, $data);
   Controller::refreshBoard(new EventContext('activate'));
   boardCheck($client->starts === [0, 1, 0, 1, 0, 1] && BoardResultCache::load('7', '70') === $result, 'Board Refresh fetches every page and replaces its cached result.');
+  $reload = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => ord('r'), 'mod' => 0, 'repeat' => false]];
+  $screen->handleEvent($reload);
+  boardCheck($client->starts === [0, 1, 0, 1, 0, 1, 0, 1], 'R reloads the selected sprint from Jira.');
+  Controller::openBoardSprints(new EventContext('activate'));
+  $screen->handleEvent($enter);
+  boardCheck((new ReflectionProperty(Controller::class, 'boardIssueKeys'))->getValue() !== [] && $client->starts === [0, 1, 0, 1, 0, 1, 0, 1], 'Choosing the current sprint loads its cached issues.');
+  Controller::openBoardBoards(new EventContext('activate'));
+  $screen->handleEvent($enter);
+  boardCheck((new ReflectionProperty(Controller::class, 'boardIssueKeys'))->getValue() === [] && BoardState::load()['sprintId'] === '70', 'Choosing the current board clears displayed issues.');
+  Controller::openBoardProjects(new EventContext('activate'));
+  $screen->handleEvent($enter);
+  boardCheck((new ReflectionProperty(Controller::class, 'boardIssueKeys'))->getValue() === [] && BoardState::load()['boardId'] === '7', 'Choosing the current project clears displayed issues.');
+  $filterIssues = [];
+  for ($person = 1; $person <= 12; $person++) {
+    $count = $person === 11 ? 3 : ($person === 10 ? 2 : 1);
+    for ($ticket = 1; $ticket <= $count; $ticket++) {
+      $filterIssues[] = ['key' => 'PERSON-' . $person . '-' . $ticket, 'fields' => [
+        'summary' => 'Assigned ticket', 'status' => ['id' => '2'],
+        'assignee' => ['accountId' => 'account-' . $person, 'displayName' => 'Person ' . $person],
+      ]];
+    }
+  }
+  (new ReflectionMethod(Controller::class, 'showBoardResult'))->invoke(null, ['configuration' => $result['configuration'], 'issues' => $filterIssues], false);
+  boardCheck((new ReflectionProperty(Controller::class, 'boardColumnTitles'))->getValue() === ['To Do'], 'The Board hides columns without visible cards.');
+  $people = (new ReflectionProperty(Controller::class, 'boardAssignees'))->getValue();
+  boardCheck(count($people) === 12 && $people[0]['name'] === 'Person 11' && $people[0]['count'] === 3 && $people[1]['name'] === 'Person 10', 'Assignees are ordered by ticket count.');
+  $f = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => ord('f'), 'mod' => 0, 'repeat' => false]];
+  $screen->handleEvent($f);
+  $assigneeRow = (new ReflectionProperty(Controller::class, 'boardAssigneeOpen'))->getValue();
+  $buttons = (new ReflectionProperty(Controller::class, 'boardAssigneeButtons'))->getValue();
+  boardCheck($assigneeRow->grid()->height === 1 && count($buttons) === 6 && $buttons['0']['key'] === '' && $buttons['1']['key'] === 'id:account-11', 'F opens one row with Everybody and the five busiest people.');
+  $screen->handleEvent($f);
+  $buttons = (new ReflectionProperty(Controller::class, 'boardAssigneeButtons'))->getValue();
+  boardCheck(count($buttons) === 6 && $buttons['0']['key'] === '' && $buttons['1']['key'] === $people[5]['key'], 'F shows the next five people and keeps 0 for Everybody.');
+  $screen->handleEvent($f);
+  $buttons = (new ReflectionProperty(Controller::class, 'boardAssigneeButtons'))->getValue();
+  boardCheck(count($buttons) === 3 && $buttons['1']['key'] === $people[10]['key'], 'F reaches the last, shorter page of people.');
+  $screen->handleEvent($f);
+  $buttons = (new ReflectionProperty(Controller::class, 'boardAssigneeButtons'))->getValue();
+  boardCheck(count($buttons) === 6 && $buttons['1']['key'] === $people[0]['key'], 'F cycles back to the first page.');
+  $screen->handleEvent($f);
+  $oneDown = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => ord('1'), 'mod' => 0, 'repeat' => false]];
+  $oneUp = (object)['type' => SDL::SDL_EVENT_KEY_UP, 'key' => (object)['key' => ord('1'), 'mod' => 0, 'repeat' => false]];
+  $screen->handleEvent($oneDown);
+  $screen->handleEvent($oneUp);
+  boardCheck((new ReflectionProperty(Controller::class, 'boardAssigneeOpen'))->getValue() === null && array_keys((new ReflectionProperty(Controller::class, 'boardIssueKeys'))->getValue()) === ['PERSON-3-1'], 'A number hotkey applies its assignee and closes the selector.');
+  boardCheck(str_contains($screen->statusBar->text(), 'Assignee: Person 3'), 'The board status identifies the active assignee.');
+  $screen->handleEvent($f);
+  $zeroDown = (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => ord('0'), 'mod' => 0, 'repeat' => false]];
+  $zeroUp = (object)['type' => SDL::SDL_EVENT_KEY_UP, 'key' => (object)['key' => ord('0'), 'mod' => 0, 'repeat' => false]];
+  $screen->handleEvent($zeroDown);
+  $screen->handleEvent($zeroUp);
+  boardCheck((new ReflectionProperty(Controller::class, 'boardAssigneeOpen'))->getValue() === null && count((new ReflectionProperty(Controller::class, 'boardIssueKeys'))->getValue()) === count($filterIssues), '0 restores everybody and closes the selector.');
+  $screen->handleEvent($f);
+  $screen->handleEvent($escape);
+  boardCheck((new ReflectionProperty(Controller::class, 'boardAssigneeOpen'))->getValue() === null && count((new ReflectionProperty(Controller::class, 'boardIssueKeys'))->getValue()) === count($filterIssues), 'Escape closes the assignee selector without changing the filter.');
+  (new ReflectionMethod(Controller::class, 'showBoardResult'))->invoke(null, ['configuration' => $result['configuration'], 'issues' => []], false);
+  $emptyBoardGrid = new Grid($screen->layout->grid()->width, $screen->layout->grid()->height);
+  $screen->paint($emptyBoardGrid);
+  boardCheck((new ReflectionProperty(Controller::class, 'boardColumnTitles'))->getValue() === [] && str_contains(boardRow($emptyBoardGrid, 0, 2, $emptyBoardGrid->width()), 'This sprint has no issues'), 'An empty sprint shows its empty message without placeholder columns.');
 } finally {
   $window->close();
   $font->close();

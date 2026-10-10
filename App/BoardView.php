@@ -39,6 +39,6 @@ class BoardView {
       }
       $columns[$index]['issues'][] = $issue;
     }
-    return $columns;
+    return array_values(array_filter($columns, fn(array $column): bool => $column['issues'] !== []));
   }
 }

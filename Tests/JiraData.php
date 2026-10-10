@@ -14,8 +14,14 @@ use MAJIRA\App\ProjectCache;
 use MAJIRA\App\Settings;
 use MAJIRA\App\SprintCache;
 use MAJIRA\App\TicketCache;
+use MAJIRA\App\TicketHistory;
+use MAJIRA\App\Controller;
+use MAJIRA\App\FilterSummary;
 use MAJIRA\Jira\Client;
 use SPTK\Core\AppData;
+use SPTK\Core\Style;
+use SPTK\Core\Window;
+use SPTK\XmlParser\ScreenParser;
 
 /** Exercise cache reuse and page scope with a fake Jira client. */
 class FakeClient extends Client {
@@ -93,7 +99,7 @@ class FakeClient extends Client {
 
   public function issue(string $key, array $fields): array {
     $this->details++;
-    return ['key' => $key, 'fields' => ['summary' => 'Detail']];
+    return ['key' => $key, 'fields' => ['summary' => 'Detail', 'description' => null]];
   }
 
   public function createIssueTypes(string $projectKey): array {
@@ -226,6 +232,30 @@ try {
 $data->ticket('AP-1');
 $data->ticket('AP-1');
 check($fake->details === 1, 'Ticket detail cache was not reused.');
+check($data->cachedTicket('AP-1')['fields']['summary'] === 'Detail' && $fake->details === 1, 'Cached ticket lookup must avoid Jira.');
+check($data->cachedTicket('AP-404') === null, 'Missing cached ticket must return null.');
+check(!TicketHistory::add(['key' => 'AP-3', 'fields' => ['summary' => 'Search result']]) && TicketHistory::load() === [], 'A search result without ticket details must not enter history.');
+TicketHistory::add(['key' => 'AP-1', 'fields' => ['summary' => 'First title', 'description' => null]]);
+TicketHistory::add(['key' => 'AP-2', 'fields' => ['summary' => 'Second title', 'description' => null]]);
+TicketHistory::add(['key' => 'AP-1', 'fields' => ['summary' => 'Latest title', 'description' => null]]);
+check(TicketHistory::load()[0] === ['key' => 'AP-1', 'title' => 'Latest title'], 'Recently opened ticket must be first in history.');
+$ticketScreen = (new ScreenParser())->parse('ticket.xml', new Style(), 'ticket', 'Ticket');
+$window = (new ReflectionClass(Window::class))->newInstanceWithoutConstructor();
+(new ReflectionProperty(Window::class, 'screens'))->setValue($window, [$ticketScreen]);
+(new ReflectionProperty(Controller::class, 'window'))->setValue(null, $window);
+(new ReflectionProperty(Controller::class, 'data'))->setValue(null, $data);
+$propertyCards = [];
+foreach (['status', 'type', 'priority', 'assignee', 'reporter', 'created', 'updated', 'labels'] as $property) {
+  $propertyCards[$property] = new FilterSummary(ucfirst($property));
+}
+(new ReflectionProperty(Controller::class, 'ticketProperties'))->setValue(null, $propertyCards);
+$restoreTicket = new ReflectionMethod(Controller::class, 'restoreLastTicket');
+$restoreTicket->invoke(null);
+check($ticketScreen->widget('ticket-summary')->getValue() === 'Detail' && $ticketScreen->widget('ticket-key')->text() === 'AP-1', 'Startup must restore cached ticket details.');
+check($ticketScreen->selectedLeaf()->instance() === $ticketScreen->widget('ticket-summary') && $fake->details === 1, 'Startup restore must select the title without Jira I/O.');
+AppData::saveJson('ticket-details.json', []);
+$restoreTicket->invoke(null);
+check($ticketScreen->widget('ticket-summary')->getValue() === 'Latest title' && $fake->details === 1, 'Missing detail cache must retain the last ticket title without Jira I/O.');
 $data->ticket('AP-1', true);
 check($fake->details === 2, 'Fresh ticket request did not bypass the cache.');
 $types = $data->issueTypes('AP');
