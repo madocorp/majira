@@ -90,7 +90,7 @@ class JiraData {
     $issues = [];
     $start = 0;
     do {
-      $page = $client->boardSprintIssues((int)$boardId, (int)$sprintId, '', ['summary', 'status', 'assignee'], 100, $start);
+      $page = $client->boardSprintIssues((int)$boardId, (int)$sprintId, '', ['summary', 'status', 'assignee', 'issuetype'], 100, $start);
       $batch = is_array($page['issues'] ?? null) ? $page['issues'] : [];
       $issues = array_merge($issues, $batch);
       $loaded = count($batch);
@@ -183,11 +183,12 @@ class JiraData {
   /** Return a cached issue unless a fresh Jira request is requested. */
   public function ticket(string $key, bool $refresh = false): array {
     $cache = AppData::loadJson('ticket-details.json');
-    if (!$refresh && is_array($cache[$key] ?? null)) {
+    if (!$refresh && is_array($cache[$key] ?? null) && !empty($cache[$key]['_majiraRelatedFieldsLoaded'])) {
       return $cache[$key];
     }
-    $fields = ['summary', 'description', 'status', 'assignee', 'reporter', 'priority', 'issuetype', 'created', 'updated', 'comment', 'attachment', 'labels', 'project'];
+    $fields = ['summary', 'description', 'status', 'assignee', 'reporter', 'priority', 'issuetype', 'created', 'updated', 'comment', 'attachment', 'labels', 'project', 'parent', 'subtasks', 'issuelinks'];
     $issue = $this->client()->issue($key, $fields);
+    $issue['_majiraRelatedFieldsLoaded'] = true;
     $cache[$key] = $issue;
     AppData::saveJson('ticket-details.json', $cache);
     return $issue;
@@ -195,8 +196,13 @@ class JiraData {
 
   /** Report whether an issue can be opened without Jira I/O. */
   public function hasCachedTicket(string $key): bool {
+    return $this->cachedTicket($key) !== null;
+  }
+
+  /** Read ticket details already on disk without contacting Jira. */
+  public function cachedTicket(string $key): ?array {
     $cache = AppData::loadJson('ticket-details.json');
-    return is_array($cache[$key] ?? null);
+    return is_array($cache[$key] ?? null) ? $cache[$key] : null;
   }
 
   /** Read cached creatable issue types for a project. */

@@ -1,5 +1,5 @@
 <Screen>
-  <Event type="keyDown" key="f5" action="MAJIRA\App\Controller::refreshTickets" />
+  <Event type="keyDown" key="r" action="MAJIRA\App\Controller::refreshTickets" />
   <Event type="keyDown" key="f6" action="MAJIRA\App\Controller::moreTickets" />
   <Event type="keyDown" key="m" action="MAJIRA\App\Controller::moreTickets" />
   <Event type="keyUp" key="f" action="MAJIRA\App\Controller::filterShortcut" />

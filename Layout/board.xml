@@ -1,18 +1,28 @@
 <Screen>
-  <Event type="keyDown" key="f5" action="MAJIRA\App\Controller::refreshBoard" />
+  <Event type="keyDown" key="r" action="MAJIRA\App\Controller::refreshBoard" />
+  <Event type="keyDown" key="f" action="MAJIRA\App\Controller::openBoardAssigneeFilter" />
+  <Event type="keyDown" key="escape" action="MAJIRA\App\Controller::closeBoardAssigneeFilter" />
   <Event type="keyDown" key="left" action="MAJIRA\App\Controller::boardColumnLeft" />
   <Event type="keyDown" key="right" action="MAJIRA\App\Controller::boardColumnRight" />
+  <Event type="keyDown" key="home" action="MAJIRA\App\Controller::boardColumnHome" />
+  <Event type="keyDown" key="end" action="MAJIRA\App\Controller::boardColumnEnd" />
   <Event type="keyDown" key="up" action="MAJIRA\App\Controller::boardCardUp" />
   <Event type="keyDown" key="down" action="MAJIRA\App\Controller::boardCardDown" />
+  <Event type="keyDown" key="pageup" action="MAJIRA\App\Controller::boardCardPageUp" />
+  <Event type="keyDown" key="pagedown" action="MAJIRA\App\Controller::boardCardPageDown" />
   <Layout>
     <Layout direction="horizontal" height="1">
       <Button id="board-project-button" label="Project: Select" action="MAJIRA\App\Controller::openBoardProjects" width="1*" />
+      <Separator />
       <Button id="board-board-button" label="Board: Select" action="MAJIRA\App\Controller::openBoardBoards" width="1*" />
+      <Separator />
       <Button id="board-sprint-button" label="Sprint: Select" action="MAJIRA\App\Controller::openBoardSprints" width="1*" />
-      <Button label="Refresh" action="MAJIRA\App\Controller::refreshBoard" />
     </Layout>
     <Layout id="board-picker-slot" height="0" navigate="false">
       <Empty id="board-picker-empty" height="0" navigate="false" />
+    </Layout>
+    <Layout id="board-assignee-slot" height="0" navigate="false">
+      <Empty height="0" navigate="false" />
     </Layout>
     <Separator />
     <Layout id="board-body" height="1*">

@@ -29,11 +29,20 @@ class Controller {
   private static ?LayoutNode $boardPickerClosed = null;
   private static ?LayoutNode $boardPickerOpen = null;
   private static ?LayoutNode $boardBody = null;
+  private static ?LayoutNode $boardAssigneeClosed = null;
+  private static ?LayoutNode $boardAssigneeOpen = null;
+  private static ?LayoutLeaf $boardAssigneeReturnLeaf = null;
+  private static array $boardAssigneeButtons = [];
+  private static array $boardAssignees = [];
+  private static ?array $boardResult = null;
+  private static string $boardAssigneeKey = '';
+  private static int $boardAssigneePage = 0;
   private static ?ListView $boardPickerList = null;
   private static string $boardPickerKind = '';
   private static ?string $boardPickerSelection = null;
   private static array $boardIssueKeys = [];
   private const BOARD_VISIBLE_COLUMNS = 4;
+  private const BOARD_ASSIGNEES_PER_PAGE = 5;
   private static array $boardColumnLeaves = [];
   private static array $boardColumnNodes = [];
   private static array $boardColumnStacks = [];
@@ -44,6 +53,20 @@ class Controller {
   private static array $meta = [];
   private static array $ticket = [];
   private static string $ticketKey = '';
+  private const TICKET_CARDS = ['description', 'comments', 'attachments', 'related'];
+  private static array $ticketExpanded = [];
+  private static array $ticketCompact = [];
+  private static array $ticketProperties = [];
+  private static string $activeTicketCard = 'description';
+  private static array $relatedTicketKeys = [];
+  private static ?LayoutNode $ticketPropertiesPane = null;
+  private static ?LayoutNode $ticketHistoryPane = null;
+  private static ?LayoutLeaf $ticketHistoryLeaf = null;
+  private static ?ListView $ticketHistoryList = null;
+  private static array $ticketHistoryRows = [];
+  private static array $ticketBeforeHistory = [];
+  private static string $ticketKeyBeforeHistory = '';
+  private static bool $ticketHistoryOpen = false;
   private static ?LayoutLeaf $listTableLeaf = null;
   private static ?LayoutLeaf $listFocusBeforeSidebar = null;
   private static ?LayoutNode $listTableOnly = null;
@@ -69,6 +92,7 @@ class Controller {
     self::prepareListSidebar();
     self::prepareBoard();
     self::prepareFilterTiles();
+    self::prepareTicketTiles();
     $cached = TicketCache::load();
     self::$issues = is_array($cached['issues'] ?? null) ? $cached['issues'] : [];
     self::$meta = is_array($cached['meta'] ?? null) ? $cached['meta'] : [];
@@ -76,6 +100,7 @@ class Controller {
     foreach (['jira-site' => 'site', 'jira-email' => 'email'] as $id => $key) {
       self::input('settings', $id)->setValue((string)($settings[$key] ?? ''));
     }
+    self::text('settings', 'settings-unlicense')->setText(trim((string)file_get_contents(APP_DIR . '/UNLICENSE')));
     self::input('list', 'jql')->setValue((new JqlBuilder())->current());
     self::renderNavigation();
     self::renderBoardSelectors();
@@ -85,6 +110,7 @@ class Controller {
       self::showBoardResult($cachedBoard, false);
     }
     self::renderTickets();
+    self::restoreLastTicket();
     $filters = FilterState::load();
     $selected = FilterState::customFilterByName($filters['selectedCustomFilter'], $filters);
     if ($selected !== null) {
@@ -188,9 +214,10 @@ class Controller {
   private static function prepareBoard(): void {
     $layout = self::$window->screen('board')->layout;
     self::$boardPickerClosed = $layout->findNode('board-picker-slot');
+    self::$boardAssigneeClosed = $layout->findNode('board-assignee-slot');
     self::$boardBody = $layout->findNode('board-body');
-    if (self::$boardPickerClosed === null || self::$boardBody === null) {
-      throw new \LogicException('Board layout is missing its picker or body.');
+    if (self::$boardPickerClosed === null || self::$boardAssigneeClosed === null || self::$boardBody === null) {
+      throw new \LogicException('Board layout is missing its picker, assignee slot, or body.');
     }
   }
 
@@ -284,17 +311,16 @@ class Controller {
       'board' => 'boardId',
       'sprint' => 'sprintId',
     };
-    if ($state[$key] === $selection) {
-      return;
+    if ($state[$key] !== $selection) {
+      $state[$key] = $selection;
+      if ($kind === 'project') {
+        $state['boardId'] = '';
+        $state['sprintId'] = '';
+      } else if ($kind === 'board') {
+        $state['sprintId'] = '';
+      }
+      BoardState::save($state);
     }
-    $state[$key] = $selection;
-    if ($kind === 'project') {
-      $state['boardId'] = '';
-      $state['sprintId'] = '';
-    } else if ($kind === 'board') {
-      $state['sprintId'] = '';
-    }
-    BoardState::save($state);
     self::renderBoardSelectors();
     self::clearBoardBody();
     if ($kind === 'sprint' && $selection !== '') {
@@ -355,7 +381,121 @@ class Controller {
     }
   }
 
+  /** Identify a Jira user consistently even when display names are duplicated. */
+  private static function boardIssueAssigneeKey(array $issue): string {
+    $assignee = $issue['fields']['assignee'] ?? null;
+    if (!is_array($assignee)) {
+      return '';
+    }
+    $id = trim((string)($assignee['accountId'] ?? ''));
+    $name = trim((string)($assignee['displayName'] ?? ''));
+    return $id !== '' ? 'id:' . $id : ($name !== '' ? 'name:' . $name : '');
+  }
+
+  /** Count assignees across the loaded sprint and order them by ticket count. */
+  private static function boardAssigneeChoices(array $issues): array {
+    $people = [];
+    foreach ($issues as $issue) {
+      if (!is_array($issue) || trim((string)($issue['key'] ?? '')) === '' || ($key = self::boardIssueAssigneeKey($issue)) === '') {
+        continue;
+      }
+      $assignee = $issue['fields']['assignee'];
+      $people[$key] ??= [
+        'key' => $key,
+        'name' => trim((string)($assignee['displayName'] ?? '')) ?: trim((string)($assignee['accountId'] ?? '')),
+        'count' => 0,
+      ];
+      $people[$key]['count']++;
+    }
+    uasort($people, fn(array $a, array $b): int => $b['count'] <=> $a['count'] ?: strcasecmp($a['name'], $b['name']) ?: strcmp($a['key'], $b['key']));
+    return array_values($people);
+  }
+
+  /** Open the assignee row, or show its next five people when already open. */
+  public static function openBoardAssigneeFilter(EventContext $event): bool {
+    if (self::$boardResult === null) {
+      self::status('Load a Board sprint before filtering.');
+      return true;
+    }
+    if (self::$boardAssigneeOpen === null) {
+      self::$boardAssigneeReturnLeaf = self::$window->screen('board')->selectedLeaf();
+      self::$boardAssigneePage = 0;
+    } else {
+      self::$boardAssigneePage = (self::$boardAssigneePage + 1) % max(1, (int)ceil(count(self::$boardAssignees) / self::BOARD_ASSIGNEES_PER_PAGE));
+    }
+    self::renderBoardAssigneePage();
+    return true;
+  }
+
+  private static function renderBoardAssigneePage(): void {
+    $entries = array_merge([
+      ['key' => '', 'name' => 'Everybody', 'count' => count(self::$boardResult['issues'])],
+    ], array_slice(self::$boardAssignees, self::$boardAssigneePage * self::BOARD_ASSIGNEES_PER_PAGE, self::BOARD_ASSIGNEES_PER_PAGE));
+    $row = new LayoutNode('horizontal', '1*', '1');
+    self::$boardAssigneeButtons = [];
+    $first = null;
+    foreach ($entries as $index => $entry) {
+      $hotkey = (string)$index;
+      $label = $entry['name'] . ' (' . $entry['count'] . ')';
+      $button = new Button($label, $hotkey, self::class . '::selectBoardAssigneeFilter', new Style());
+      $button->setActivated($entry['key'] === self::$boardAssigneeKey);
+      $button->setTips($hotkey . ': ' . $label . '. Return filters the board.');
+      $leaf = new LayoutLeaf('Button', '1*', '1', $button);
+      $row->addLeaf($leaf);
+      self::$boardAssigneeButtons[$hotkey] = ['button' => $button, 'key' => $entry['key']];
+      $first ??= $leaf;
+    }
+    $screen = self::$window->screen('board');
+    if (!$screen->layout->replaceChild(self::$boardAssigneeOpen ?? self::$boardAssigneeClosed, $row)) {
+      throw new \LogicException('Board assignee slot is missing.');
+    }
+    self::$boardAssigneeOpen = $row;
+    $screen->setLayout($screen->layout);
+    self::$window->refreshLayout();
+    $screen->selectLeaf($first);
+  }
+
+  /** Apply one visible assignee button, including 0 for Everybody. */
+  public static function selectBoardAssigneeFilter(EventContext $event): void {
+    foreach (self::$boardAssigneeButtons as $entry) {
+      if ($entry['button'] !== $event->widget) {
+        continue;
+      }
+      self::$boardAssigneeKey = $entry['key'];
+      self::closeBoardAssigneeFilter($event);
+      if (self::$boardResult !== null) {
+        self::showBoardResult(self::$boardResult, false);
+      }
+      return;
+    }
+  }
+
+  /** Hide the selector row and return focus to the tile that opened it. */
+  public static function closeBoardAssigneeFilter(EventContext $event): bool {
+    if (self::$boardAssigneeOpen === null) {
+      return false;
+    }
+    $screen = self::$window->screen('board');
+    if (!$screen->layout->replaceChild(self::$boardAssigneeOpen, self::$boardAssigneeClosed)) {
+      throw new \LogicException('Open Board assignee row is missing.');
+    }
+    self::$boardAssigneeOpen = null;
+    self::$boardAssigneeButtons = [];
+    $screen->setLayout($screen->layout);
+    self::$window->refreshLayout();
+    if (self::$boardAssigneeReturnLeaf !== null && in_array(self::$boardAssigneeReturnLeaf, $screen->layout->movementLeaves(), true)) {
+      $screen->selectLeaf(self::$boardAssigneeReturnLeaf);
+    }
+    self::$boardAssigneeReturnLeaf = null;
+    return true;
+  }
+
   private static function clearBoardBody(string $message = 'Select a project, board and sprint above to load its issues.'): void {
+    self::closeBoardAssigneeFilter(new EventContext('activate'));
+    self::$boardResult = null;
+    self::$boardAssignees = [];
+    self::$boardAssigneeKey = '';
+    self::$boardAssigneePage = 0;
     if (self::boardCardLocation(self::$window->screen('board')->activeLeaf()) !== null) {
       self::$window->screen('board')->release('cancel');
     }
@@ -422,6 +562,9 @@ class Controller {
 
   /** Fetch a fresh first page. */
   public static function refreshTickets(EventContext $event): void {
+    if (self::refreshShortcutBlocked('list')) {
+      return;
+    }
     if (self::loadTickets(false)) {
       self::reportTicketCount();
     }
@@ -452,7 +595,16 @@ class Controller {
 
   /** Render the configured columns and optional result message. */
   private static function showBoardResult(array $result, bool $announce = true): void {
-    $columns = BoardView::columns($result['configuration'], $result['issues']);
+    self::closeBoardAssigneeFilter(new EventContext('activate'));
+    self::$boardResult = $result;
+    self::$boardAssignees = self::boardAssigneeChoices($result['issues']);
+    if (self::$boardAssigneeKey !== '' && !in_array(self::$boardAssigneeKey, array_column(self::$boardAssignees, 'key'), true)) {
+      self::$boardAssigneeKey = '';
+    }
+    $issues = self::$boardAssigneeKey === '' ? $result['issues'] : array_values(array_filter(
+      $result['issues'], fn($issue): bool => is_array($issue) && self::boardIssueAssigneeKey($issue) === self::$boardAssigneeKey,
+    ));
+    $columns = BoardView::columns($result['configuration'], $issues);
     if ($columns === []) {
       if (self::boardCardLocation(self::$window->screen('board')->activeLeaf()) !== null) {
         self::$window->screen('board')->release('cancel');
@@ -502,7 +654,8 @@ class Controller {
         }
         $summary = trim((string)($issue['fields']['summary'] ?? ''));
         $assignee = trim((string)($issue['fields']['assignee']['displayName'] ?? ''));
-        $card = new BoardTicketCard($key, $summary, $assignee);
+        $type = trim((string)($issue['fields']['issuetype']['name'] ?? ''));
+        $card = new BoardTicketCard($key, $summary, $assignee, $type);
         $cards[] = new LayoutLeaf('BoardTicketCard', '1*', (string)BoardTicketCard::HEIGHT, $card, [
           new EventDefinition('activate', null, self::class . '::openBoardIssue'),
           new EventDefinition('select', null, self::class . '::boardColumnSelected'),
@@ -580,6 +733,14 @@ class Controller {
       $label = trim(preg_replace('/\s+/', ' ', $title));
       $titles[] = $index === self::$boardCurrentColumn ? '** ' . $label . ' **' : $label;
     }
+    if (self::$boardAssigneeKey !== '') {
+      foreach (self::$boardAssignees as $person) {
+        if ($person['key'] === self::$boardAssigneeKey) {
+          $titles[] = 'Assignee: ' . $person['name'];
+          break;
+        }
+      }
+    }
     self::$window->screen('board')->statusBar->notice(implode(' | ', $titles), 'continuous');
   }
 
@@ -600,8 +761,7 @@ class Controller {
   /** Shift the card stack by whole cards until the chosen card is visible. */
   private static function ensureBoardCardVisible(int $column, int $index): void {
     $stack = self::$boardColumnStacks[$column];
-    $height = $stack->grid()->height;
-    $slots = max(1, intdiv(max(0, $height) + 1, BoardTicketCard::HEIGHT + 1));
+    $slots = self::boardVisibleCardSlots($stack);
     $top = intdiv($stack->scrollOffset(), BoardTicketCard::HEIGHT + 1);
     if ($index < $top) {
       $top = $index;
@@ -612,6 +772,10 @@ class Controller {
     }
     $stack->setScrollOffset($top * (BoardTicketCard::HEIGHT + 1));
     self::$window->refreshLayout();
+  }
+
+  private static function boardVisibleCardSlots(LayoutNode $stack): int {
+    return max(1, intdiv(max(0, $stack->grid()->height) + 1, BoardTicketCard::HEIGHT + 1));
   }
 
   /** Move between board columns, shifting the four-column viewport at an edge. */
@@ -649,6 +813,31 @@ class Controller {
     return self::moveBoardColumn(1);
   }
 
+  /** Jump to the visible edge, then advance one viewport of columns. */
+  private static function pageBoardColumn(int $step): bool {
+    $location = self::boardCardLocation(self::$window->screen('board')->selectedLeaf());
+    if ($location === null) {
+      return false;
+    }
+    [$current] = $location;
+    $last = count(self::$boardColumnNodes) - 1;
+    $edge = $step > 0
+      ? min($last, self::$boardViewportStart + self::BOARD_VISIBLE_COLUMNS - 1)
+      : self::$boardViewportStart;
+    $next = $step > 0
+      ? ($current < $edge ? $edge : min($last, $edge + self::BOARD_VISIBLE_COLUMNS))
+      : ($current > $edge ? $edge : max(0, $edge - self::BOARD_VISIBLE_COLUMNS));
+    return $next === $current || self::moveBoardColumn($next - $current);
+  }
+
+  public static function boardColumnHome(EventContext $event): bool {
+    return self::pageBoardColumn(-1);
+  }
+
+  public static function boardColumnEnd(EventContext $event): bool {
+    return self::pageBoardColumn(1);
+  }
+
   /** Move between cards within a column and scroll at its visible edge. */
   private static function moveBoardCard(int $step): bool {
     $screen = self::$window->screen('board');
@@ -673,6 +862,38 @@ class Controller {
 
   public static function boardCardDown(EventContext $event): bool {
     return self::moveBoardCard(1);
+  }
+
+  /** Jump to the visible edge, then advance one full page in this column. */
+  private static function pageBoardCard(int $step): bool {
+    $screen = self::$window->screen('board');
+    $location = self::boardCardLocation($screen->selectedLeaf());
+    if ($location === null) {
+      return false;
+    }
+    [$column, $index] = $location;
+    $stack = self::$boardColumnStacks[$column];
+    $slots = self::boardVisibleCardSlots($stack);
+    $top = intdiv($stack->scrollOffset(), BoardTicketCard::HEIGHT + 1);
+    $last = count(self::$boardColumnLeaves[$column]) - 1;
+    $edge = $step > 0 ? min($last, $top + $slots - 1) : $top;
+    $next = $step > 0
+      ? ($index < $edge ? $edge : min($last, $edge + $slots))
+      : ($index > $edge ? $edge : max(0, $edge - $slots));
+    if ($next !== $index) {
+      self::$boardCardIndexes[$column] = $next;
+      $screen->selectLeaf(self::$boardColumnLeaves[$column][$next]);
+      self::ensureBoardCardVisible($column, $next);
+    }
+    return true;
+  }
+
+  public static function boardCardPageUp(EventContext $event): bool {
+    return self::pageBoardCard(-1);
+  }
+
+  public static function boardCardPageDown(EventContext $event): bool {
+    return self::pageBoardCard(1);
   }
 
   /** Track the selected card and its column for horizontal navigation. */
@@ -729,6 +950,9 @@ class Controller {
 
   /** Prepare the ticket creation screen. */
   public static function newTicket(EventContext $event): void {
+    if (self::$ticketHistoryOpen) {
+      self::cancelTicketHistory($event);
+    }
     $project = (string)(Settings::load()['projectKey'] ?? '');
     if ($project === '') {
       self::status('Select a project before creating a ticket.', true);
@@ -737,20 +961,15 @@ class Controller {
     self::title('create', 'create-project')->setText('New ticket in ' . $project);
     $types = self::$data->cachedIssueTypes($project);
     if ($types === []) {
-      self::reloadIssueTypes($event);
+      self::loadIssueTypes($project);
     } else {
       self::renderIssueTypes($types);
     }
     self::$window->setCurrentScreenId('create');
   }
 
-  /** Refresh issue types from Jira for the selected project. */
-  public static function reloadIssueTypes(EventContext $event): void {
-    $project = (string)(Settings::load()['projectKey'] ?? '');
-    if ($project === '') {
-      self::status('Select a project first.', true);
-      return;
-    }
+  /** Fetch issue types when the selected project has no cached choices. */
+  private static function loadIssueTypes(string $project): void {
     self::request('GET issue types for ' . $project, function() use ($project): void {
       self::renderIssueTypes(self::$data->issueTypes($project));
     });
@@ -905,6 +1124,7 @@ class Controller {
       self::renderBoardSelectors();
       self::clearBoardBody();
       TicketHistory::clear();
+      self::clearTicket();
       $settings['projectKey'] = '';
       $settings['boardId'] = '';
       $settings['sprintId'] = '';
@@ -936,7 +1156,7 @@ class Controller {
     self::$meta = [];
     $boardState = BoardState::load();
     $boardMessage = $boardState['boardId'] !== '' && $boardState['sprintId'] !== ''
-      ? 'Board cache cleared. Press F5 to reload this sprint.'
+      ? 'Board cache cleared. Press R to reload this sprint.'
       : 'Select a project, board and sprint above to load its issues.';
     self::clearBoardBody($boardMessage);
     self::renderNavigation();
@@ -1286,9 +1506,21 @@ class Controller {
 
   /** Reload the current ticket from Jira. */
   public static function refreshTicket(EventContext $event): void {
+    if (self::refreshShortcutBlocked('ticket')) {
+      return;
+    }
+    if (self::$ticketHistoryOpen) {
+      self::cancelTicketHistory($event);
+    }
     if (self::$ticketKey !== '') {
       self::openTicket(self::$ticketKey, true);
     }
+  }
+
+  /** Keep R available on tables without intercepting text or List input. */
+  private static function refreshShortcutBlocked(string $screenId): bool {
+    $widget = self::$window->screen($screenId)->activeLeaf()?->instance();
+    return $widget instanceof Input || $widget instanceof TextEditor || $widget instanceof ListView;
   }
 
   /** Save the summary field. */
@@ -1298,30 +1530,31 @@ class Controller {
       self::status('Summary cannot be empty.', true);
       return;
     }
+    if ($summary === (string)(self::$ticket['fields']['summary'] ?? '')) {
+      return;
+    }
     self::writeTicket(['summary' => $summary], 'PUT summary');
   }
 
   /** Save the description field. */
   public static function saveDescription(EventContext $event): void {
-    if (self::$ticketKey !== '') {
-      self::writeTicket(['description' => Adf::fromMarkdown(self::editor('ticket', 'ticket-description')->getValue())], 'PUT description');
+    $description = self::editor('ticket', 'ticket-description')->getValue();
+    if (self::$ticketKey !== '' && $description !== Adf::toText(self::$ticket['fields']['description'] ?? null)) {
+      self::writeTicket(['description' => Adf::fromMarkdown($description)], 'PUT description');
     }
   }
 
-  /** Add a comment and refresh the ticket. */
-  public static function addComment(EventContext $event): void {
-    $text = trim(self::editor('ticket', 'new-comment')->getValue());
-    if (self::$ticketKey === '' || $text === '') {
-      self::status('Enter a comment first.', true);
-      return;
+  /** Open the related issue selected in the ticket card. */
+  public static function openRelatedTicket(EventContext $event): void {
+    $key = self::$relatedTicketKeys[self::table('ticket', 'ticket-related')->cursorRow()] ?? '';
+    if ($key !== '') {
+      self::openTicket($key);
     }
-    $saved = self::request('POST comment to ' . self::$ticketKey, function() use ($text): void {
-      self::$data->client()->addComment(self::$ticketKey, Adf::fromMarkdown($text));
-      self::editor('ticket', 'new-comment')->setValue('');
-    });
-    if ($saved) {
-      self::openTicket(self::$ticketKey, true);
-    }
+  }
+
+  /** Discard changes to the displayed comment history. */
+  public static function restoreTicketComments(EventContext $event): void {
+    self::editor('ticket', 'ticket-comments')->setValue(self::$ticketKey === '' ? '' : self::ticketCommentsText());
   }
 
   /** Load tickets and show them only when the request succeeds. */
@@ -1364,17 +1597,48 @@ class Controller {
 
   /** Open a cached or fresh ticket. */
   private static function openTicket(string $key, bool $refresh = false): void {
+    if (self::$ticketHistoryOpen) {
+      self::cancelTicketHistory(new EventContext('cancel'));
+    }
     $label = !$refresh && self::$data->hasCachedTicket($key) ? 'Open cached ' : 'GET Jira ticket ';
     self::request($label . $key, function() use ($key, $refresh): void {
       self::$ticket = self::$data->ticket($key, $refresh);
       self::$ticketKey = $key;
-      TicketHistory::add(self::$ticket);
       if ($refresh) {
         self::refreshTicketRow();
       }
       self::renderTicket();
+      self::resetTicketDeck();
       self::$window->setCurrentScreenId('ticket');
+      $screen = self::$window->screen('ticket');
+      $screen->selectLeaf($screen->layout->findNode('ticket-left')->leaves()[0]);
+      self::$window->refreshLayout();
+      TicketHistory::add(self::$ticket);
     });
+  }
+
+  /** Restore the most recently opened ticket without a startup Jira request. */
+  private static function restoreLastTicket(): void {
+    $last = TicketHistory::load()[0] ?? null;
+    if (!is_array($last) || ($key = (string)($last['key'] ?? '')) === '') {
+      return;
+    }
+    self::$ticketKey = $key;
+    self::$ticket = self::$data->cachedTicket($key) ?? [
+      'key' => $key,
+      'fields' => ['summary' => (string)($last['title'] ?? '')],
+    ];
+    self::renderTicket();
+    $screen = self::$window->screen('ticket');
+    $screen->selectLeaf($screen->layout->findNode('ticket-left')->leaves()[0]);
+  }
+
+  /** Empty ticket details after the Jira account changes. */
+  private static function clearTicket(): void {
+    self::$ticket = [];
+    self::$ticketKey = '';
+    self::renderTicket();
+    self::resetTicketDeck();
   }
 
   /** Update Jira and refresh the issue cache. */
@@ -1888,35 +2152,246 @@ class Controller {
     self::$window->refreshLayout();
   }
 
-  /** Show fields, comments, and attachments of the current issue. */
+  /** Keep every ticket widget visible while giving the selected card more height. */
+  private static function prepareTicketTiles(): void {
+    $screen = self::$window->screen('ticket');
+    $deck = $screen->layout->findNode('ticket-deck');
+    foreach (self::TICKET_CARDS as $key) {
+      $node = $deck->findNode('ticket-' . $key . '-card');
+      $expanded = new LayoutNode('vertical', '1*', '3*', id: 'ticket-open-' . $key);
+      $compact = new LayoutNode('vertical', '1*', '1*', id: 'ticket-closed-' . $key);
+      $expanded->addNode($node);
+      $compact->addNode($node);
+      $deck->replaceChild($node, $key === self::$activeTicketCard ? $expanded : $compact);
+      self::$ticketExpanded[$key] = $expanded;
+      self::$ticketCompact[$key] = $compact;
+    }
+    foreach (['status' => 'Status', 'type' => 'Type', 'priority' => 'Priority', 'assignee' => 'Assignee', 'reporter' => 'Reporter', 'created' => 'Created', 'updated' => 'Updated', 'labels' => 'Labels'] as $key => $label) {
+      $node = $screen->layout->findNode('ticket-property-' . $key);
+      $old = $node->leaves()[0];
+      $summary = new FilterSummary($label);
+      $summary->setId('ticket-' . $key);
+      $node->replaceChild($old, new LayoutLeaf('FilterSummary', '1*', '1*', $summary));
+      self::$ticketProperties[$key] = $summary;
+    }
+    self::$ticketPropertiesPane = $screen->layout->findNode('ticket-properties-pane');
+    self::$ticketHistoryList = new ListView([], false, false, false, false, new Style(), 'History');
+    self::$ticketHistoryList->setId('ticket-history');
+    self::$ticketHistoryList->setTips('Up/Down previews tickets; Return opens one; Esc closes History.');
+    self::$ticketHistoryLeaf = new LayoutLeaf('List', '1*', '1*', self::$ticketHistoryList, [
+      new EventDefinition('change', null, self::class . '::previewTicketHistory'),
+      new EventDefinition('keyDown', 'enter', self::class . '::acceptTicketHistory'),
+      new EventDefinition('keyDown', 'escape', self::class . '::cancelTicketHistory'),
+      new EventDefinition('deactivate', null, self::class . '::cancelTicketHistory'),
+    ]);
+    self::$ticketHistoryPane = new LayoutNode('vertical', '1*', '1*', id: 'ticket-history-pane');
+    self::$ticketHistoryPane->addLeaf(self::$ticketHistoryLeaf);
+    $screen->setLayout($screen->layout);
+    self::$window->refreshLayout();
+  }
+
+  /** Expand the ticket card reached with an arrow key. */
+  public static function expandTicketCard(EventContext $event): void {
+    $id = $event->widget?->id() ?? '';
+    $key = match ($id) {
+      'ticket-description' => 'description',
+      'ticket-comments' => 'comments',
+      'ticket-attachments' => 'attachments',
+      'ticket-related' => 'related',
+      default => '',
+    };
+    if (!isset(self::$ticketExpanded[$key]) || $key === self::$activeTicketCard) {
+      return;
+    }
+    $screen = self::$window->screen('ticket');
+    $deck = $screen->layout->findNode('ticket-deck');
+    $deck->replaceChild(self::$ticketExpanded[self::$activeTicketCard], self::$ticketCompact[self::$activeTicketCard]);
+    $deck->replaceChild(self::$ticketCompact[$key], self::$ticketExpanded[$key]);
+    self::$activeTicketCard = $key;
+    $screen->setLayout($screen->layout);
+    self::$window->refreshLayout();
+  }
+
+  /** Open Description when a ticket loads, regardless of the previous card. */
+  private static function resetTicketDeck(): void {
+    if (self::$activeTicketCard === 'description') {
+      return;
+    }
+    $screen = self::$window->screen('ticket');
+    $deck = $screen->layout->findNode('ticket-deck');
+    $deck->replaceChild(self::$ticketExpanded[self::$activeTicketCard], self::$ticketCompact[self::$activeTicketCard]);
+    $deck->replaceChild(self::$ticketCompact['description'], self::$ticketExpanded['description']);
+    self::$activeTicketCard = 'description';
+    $screen->setLayout($screen->layout);
+  }
+
+  /** Replace the property cards with the most recently opened tickets. */
+  public static function showTicketHistory(EventContext $event): void {
+    if (self::$ticketHistoryOpen) {
+      self::cancelTicketHistory($event);
+      return;
+    }
+    self::$ticketBeforeHistory = self::$ticket;
+    self::$ticketKeyBeforeHistory = self::$ticketKey;
+    self::$ticketHistoryRows = [];
+    $items = [];
+    foreach (TicketHistory::load() as $row) {
+      $key = $row['key'];
+      self::$ticketHistoryRows[$key] = $row;
+      $items[] = ['value' => $key, 'label' => '#' . $key . ($row['title'] === '' ? '' : ' ' . $row['title'])];
+    }
+    self::$ticketHistoryList->setItems($items);
+    if (isset(self::$ticketHistoryRows[self::$ticketKey])) {
+      self::$ticketHistoryList->setValue(self::$ticketKey);
+    }
+    self::resetTicketDeck();
+    $screen = self::$window->screen('ticket');
+    if (!$screen->layout->replaceChild(self::$ticketPropertiesPane, self::$ticketHistoryPane)) {
+      throw new \LogicException('Ticket property pane is missing.');
+    }
+    self::$ticketHistoryOpen = true;
+    $screen->setLayout($screen->layout);
+    $screen->activateLeaf(self::$ticketHistoryLeaf);
+    self::previewTicketHistory($event);
+    self::$window->refreshLayout();
+  }
+
+  /** Show cached details for the highlighted history entry without changing history order. */
+  public static function previewTicketHistory(EventContext $event): void {
+    if (!self::$ticketHistoryOpen) {
+      return;
+    }
+    $key = self::$ticketHistoryList->getValue();
+    if (!is_string($key) || $key === '') {
+      return;
+    }
+    $row = self::$ticketHistoryRows[$key] ?? [];
+    self::$ticketKey = $key;
+    self::$ticket = self::$data->cachedTicket($key) ?? [
+      'key' => $key,
+      'fields' => ['summary' => (string)($row['title'] ?? '')],
+    ];
+    self::renderTicket();
+    self::$window->refreshLayout();
+  }
+
+  /** Commit the highlighted history ticket when Return is pressed. */
+  public static function acceptTicketHistory(EventContext $event): bool {
+    if (!self::$ticketHistoryOpen) {
+      return false;
+    }
+    $key = self::$ticketHistoryList->getValue();
+    self::cancelTicketHistory($event);
+    if (is_string($key) && $key !== '') {
+      self::openTicket($key);
+    }
+    return true;
+  }
+
+  /** Hide History and restore the ticket that was open before previewing. */
+  public static function cancelTicketHistory(EventContext $event): bool {
+    if (!self::$ticketHistoryOpen) {
+      return false;
+    }
+    self::$ticketHistoryOpen = false;
+    $screen = self::$window->screen('ticket');
+    $screen->release('cancel');
+    self::$ticket = self::$ticketBeforeHistory;
+    self::$ticketKey = self::$ticketKeyBeforeHistory;
+    self::renderTicket();
+    if (!$screen->layout->replaceChild(self::$ticketHistoryPane, self::$ticketPropertiesPane)) {
+      throw new \LogicException('Ticket history pane is missing.');
+    }
+    $screen->setLayout($screen->layout);
+    foreach ($screen->layout->leaves() as $leaf) {
+      if ($leaf->instance()->id() === 'ticket-history-button') {
+        $screen->selectLeaf($leaf);
+        break;
+      }
+    }
+    self::$window->refreshLayout();
+    return true;
+  }
+
+  /** Show fields, comments, attachments, and related issues of the current ticket. */
   private static function renderTicket(): void {
     $fields = is_array(self::$ticket['fields'] ?? null) ? self::$ticket['fields'] : [];
-    self::title('ticket', 'ticket-key')->setText(self::$ticketKey);
+    self::title('ticket', 'ticket-key')->setText(self::$ticketKey === '' ? 'Ticket' : self::$ticketKey);
     self::input('ticket', 'ticket-summary')->setValue((string)($fields['summary'] ?? ''));
     self::editor('ticket', 'ticket-description')->setValue(Adf::toText($fields['description'] ?? null));
+    self::editor('ticket', 'ticket-comments')->setValue(self::$ticketKey === '' ? '' : self::ticketCommentsText());
+    $attachments = [];
+    foreach ($fields['attachment'] ?? [] as $attachment) {
+      if (is_array($attachment)) {
+        $attachments[] = [(string)($attachment['author']['displayName'] ?? ''), (string)($attachment['filename'] ?? ''), self::attachmentSize((int)($attachment['size'] ?? 0)) . '  ' . substr((string)($attachment['created'] ?? ''), 0, 10)];
+      }
+    }
+    self::table('ticket', 'ticket-attachments')->setRows(['Author', 'File', 'Size / created'], $attachments);
+    self::renderRelatedTickets($fields);
+    foreach (['status' => $fields['status']['name'] ?? '', 'type' => $fields['issuetype']['name'] ?? '', 'priority' => $fields['priority']['name'] ?? '', 'assignee' => $fields['assignee']['displayName'] ?? 'Unassigned', 'reporter' => $fields['reporter']['displayName'] ?? '', 'created' => substr((string)($fields['created'] ?? ''), 0, 16), 'updated' => substr((string)($fields['updated'] ?? ''), 0, 16), 'labels' => implode(', ', $fields['labels'] ?? [])] as $key => $value) {
+      self::$ticketProperties[$key]->setValue(self::$ticketKey === '' ? '' : ((string)$value !== '' ? (string)$value : '-'));
+    }
+  }
+
+  /** Format the current issue's comment history for the viewer. */
+  private static function ticketCommentsText(): string {
     $comments = [];
-    foreach ($fields['comment']['comments'] ?? [] as $comment) {
+    foreach (self::$ticket['fields']['comment']['comments'] ?? [] as $comment) {
+      if (!is_array($comment)) {
+        continue;
+      }
       $author = (string)($comment['author']['displayName'] ?? 'Unknown');
       $date = substr((string)($comment['created'] ?? ''), 0, 16);
       $comments[] = $author . '  ' . $date . "\n" . Adf::toText($comment['body'] ?? null);
     }
-    self::text('ticket', 'ticket-comments')->setText("Comments\n\n" . implode("\n\n", $comments));
-    $attachments = [];
-    foreach ($fields['attachment'] ?? [] as $attachment) {
-      $attachments[] = (string)($attachment['filename'] ?? '');
+    return $comments === [] ? '(no comments)' : implode("\n\n", $comments);
+  }
+
+  /** Fill the related-ticket table from the parent, children, and issue links. */
+  private static function renderRelatedTickets(array $fields): void {
+    $rows = [];
+    self::$relatedTicketKeys = [];
+    if (is_array($fields['parent'] ?? null)) {
+      self::addRelatedTicket($rows, 'Parent', $fields['parent']);
     }
-    self::text('ticket', 'ticket-attachments')->setText("Attachments\n" . implode("\n", $attachments));
-    $properties = [
-      'Status: ' . (string)($fields['status']['name'] ?? ''),
-      'Type: ' . (string)($fields['issuetype']['name'] ?? ''),
-      'Priority: ' . (string)($fields['priority']['name'] ?? ''),
-      'Assignee: ' . (string)($fields['assignee']['displayName'] ?? 'Unassigned'),
-      'Reporter: ' . (string)($fields['reporter']['displayName'] ?? ''),
-      'Created: ' . (string)($fields['created'] ?? ''),
-      'Updated: ' . (string)($fields['updated'] ?? ''),
-      'Labels: ' . implode(', ', $fields['labels'] ?? []),
-    ];
-    self::text('ticket', 'ticket-properties')->setText(implode("\n", $properties));
+    foreach ($fields['subtasks'] ?? [] as $issue) {
+      if (is_array($issue)) {
+        self::addRelatedTicket($rows, 'Child', $issue);
+      }
+    }
+    foreach ($fields['issuelinks'] ?? [] as $link) {
+      if (!is_array($link)) {
+        continue;
+      }
+      $issue = $link['outwardIssue'] ?? $link['inwardIssue'] ?? null;
+      if (is_array($issue)) {
+        $relation = isset($link['outwardIssue']) ? ($link['type']['outward'] ?? 'Related') : ($link['type']['inward'] ?? 'Related');
+        self::addRelatedTicket($rows, (string)$relation, $issue);
+      }
+    }
+    self::table('ticket', 'ticket-related')->setRows(['Relation', 'Key', 'Summary', 'Status'], $rows);
+  }
+
+  /** Add a distinct issue to the related-ticket table. */
+  private static function addRelatedTicket(array &$rows, string $relation, array $issue): void {
+    $key = (string)($issue['key'] ?? '');
+    if ($key === '' || in_array($key, self::$relatedTicketKeys, true)) {
+      return;
+    }
+    $fields = is_array($issue['fields'] ?? null) ? $issue['fields'] : [];
+    $rows[] = [$relation, $key, (string)($fields['summary'] ?? ''), (string)($fields['status']['name'] ?? '')];
+    self::$relatedTicketKeys[] = $key;
+  }
+
+  /** Format an attachment size for the table. */
+  private static function attachmentSize(int $bytes): string {
+    if ($bytes < 1024) {
+      return $bytes . ' B';
+    }
+    if ($bytes < 1048576) {
+      return round($bytes / 1024) . ' KB';
+    }
+    return round($bytes / 1048576, 1) . ' MB';
   }
 
   /** Find an input by XML id. */

@@ -10,16 +10,18 @@ class TicketHistory {
   private const FILE = 'ticket-history.json';
   private const LIMIT = 50;
 
+  /** Return recently opened tickets in reverse order. */
   public static function load(): array {
     return self::normalize(AppData::loadJson(self::FILE));
   }
 
+  /** Record a ticket only when full details have been loaded for display. */
   public static function add(array $issue): bool {
     $key = trim((string)($issue['key'] ?? ''));
-    if ($key === '') {
+    $fields = is_array($issue['fields'] ?? null) ? $issue['fields'] : [];
+    if ($key === '' || !array_key_exists('description', $fields)) {
       return false;
     }
-    $fields = is_array($issue['fields'] ?? null) ? $issue['fields'] : [];
     return AppData::saveJson(self::FILE, self::normalize(array_merge([[
       'key' => $key,
       'title' => trim((string)($fields['summary'] ?? '')),

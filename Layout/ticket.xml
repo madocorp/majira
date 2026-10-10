@@ -1,31 +1,52 @@
 <Screen>
+  <Event type="keyDown" key="r" action="MAJIRA\App\Controller::refreshTicket" />
   <Layout>
-    <Layout direction="horizontal" height="1">
-      <Title id="ticket-key" width="17">Ticket</Title>
-      <Input id="ticket-summary" width="1*" />
-      <Button label="Save summary" action="MAJIRA\App\Controller::saveSummary" />
-      <Button label="Refresh ticket" action="MAJIRA\App\Controller::refreshTicket" />
-    </Layout>
-    <Separator />
     <Layout direction="horizontal" height="1*">
-      <Layout width="3*">
-        <TextEditor id="ticket-description" label="Description" height="3*" textWrap="true" />
-        <Button label="Save description" action="MAJIRA\App\Controller::saveDescription" />
+      <Layout id="ticket-left" width="3*">
+        <Input id="ticket-summary" tip="Ticket title; Return edits and Esc or Return saves." height="1"><Event type="deactivate" action="MAJIRA\App\Controller::saveSummary" /></Input>
         <Separator />
-        <Text id="ticket-comments" height="2*" />
-        <Separator />
-        <Text id="ticket-attachments" height="1*" />
+        <Layout id="ticket-deck" height="1*">
+          <Layout id="ticket-description-card" height="1*"><TextEditor id="ticket-description" title="Description" textWrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="deactivate" action="MAJIRA\App\Controller::saveDescription" /></TextEditor></Layout>
+          <Separator />
+          <Layout id="ticket-comments-card" height="1*">
+            <TextEditor id="ticket-comments" title="Comments" tip="Browse ticket comments." textWrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="deactivate" action="MAJIRA\App\Controller::restoreTicketComments" /></TextEditor>
+          </Layout>
+          <Separator />
+          <Layout id="ticket-attachments-card" height="1*"><Table id="ticket-attachments" title="Attachments" rowCursor="true" height="1*"><Header><Field>Author</Field><Field>File</Field><Field>Size / created</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /></Table></Layout>
+          <Separator />
+          <Layout id="ticket-related-card" height="1*"><Table id="ticket-related" title="Related tickets" rowCursor="true" height="1*"><Header><Field>Relation</Field><Field>Key</Field><Field>Summary</Field><Field>Status</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="accept" action="MAJIRA\App\Controller::openRelatedTicket" /></Table></Layout>
+        </Layout>
       </Layout>
       <Separator />
-      <Layout width="1*">
-        <Text id="ticket-properties" height="1*" />
-        <TextEditor id="new-comment" label="New comment" height="8" textWrap="true" />
-        <Button label="Add comment" action="MAJIRA\App\Controller::addComment" />
+      <Layout id="ticket-right" width="1*">
+        <Title id="ticket-key" height="1">Ticket</Title>
         <Separator />
-        <Input id="open-key" label="Open ticket key" />
-        <Button label="Open key" action="MAJIRA\App\Controller::openKey" />
-        <Button label="New ticket" action="MAJIRA\App\Controller::newTicket" />
-        <Button label="Back to list" action="MAJIRA\App\Controller::showList" />
+        <Layout id="ticket-properties-pane" height="1*">
+          <Layout id="ticket-properties" height="auto">
+            <Layout id="ticket-property-status" height="2"><Text id="ticket-status" height="1*" /></Layout>
+            <Separator />
+            <Layout id="ticket-property-type" height="2"><Text id="ticket-type" height="1*" /></Layout>
+            <Separator />
+            <Layout id="ticket-property-priority" height="2"><Text id="ticket-priority" height="1*" /></Layout>
+            <Separator />
+            <Layout id="ticket-property-assignee" height="2"><Text id="ticket-assignee" height="1*" /></Layout>
+            <Separator />
+            <Layout id="ticket-property-reporter" height="2"><Text id="ticket-reporter" height="1*" /></Layout>
+            <Separator />
+            <Layout id="ticket-property-created" height="2"><Text id="ticket-created" height="1*" /></Layout>
+            <Separator />
+            <Layout id="ticket-property-updated" height="2"><Text id="ticket-updated" height="1*" /></Layout>
+            <Separator />
+            <Layout id="ticket-property-labels" height="2"><Text id="ticket-labels" height="1*" /></Layout>
+          </Layout>
+          <Empty height="1*" />
+        </Layout>
+        <Separator />
+        <Layout id="ticket-actions" direction="horizontal" height="1">
+          <Button id="ticket-create-button" label="Create" hotkey="c" action="MAJIRA\App\Controller::newTicket" width="1*" />
+          <Separator />
+          <Button id="ticket-history-button" label="History" hotkey="h" action="MAJIRA\App\Controller::showTicketHistory" width="1*" />
+        </Layout>
       </Layout>
     </Layout>
     <Separator />

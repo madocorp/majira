@@ -13,7 +13,7 @@ final class BoardTicketCard extends Widget {
 
   public const HEIGHT = 4;
 
-  public function __construct(private readonly string $key, private readonly string $summary, private readonly string $assignee, private readonly Style $style = new Style()) {
+  public function __construct(private readonly string $key, private readonly string $summary, private readonly string $assignee, private readonly string $type = '', private readonly Style $style = new Style()) {
   }
 
   public function key(): string {
@@ -24,7 +24,7 @@ final class BoardTicketCard extends Widget {
     return $this->style->background;
   }
 
-  /** Paint the key, two wrapped summary rows, and assignee name. */
+  /** Paint the key and type, two wrapped summary rows, and assignee name. */
   public function paint(GridWriter $writer): void {
     $background = $this->background();
     $writer->fill($this->style->foreground, $background);
@@ -34,6 +34,15 @@ final class BoardTicketCard extends Widget {
     }
     if ($this->key !== '') {
       $writer->write(1, 0, '#' . $this->key, $this->style->highlight, $background);
+      $keyWidth = min($width, TextMetrics::width('#' . $this->key));
+      $typeSpace = $width - $keyWidth - 1;
+      if ($this->type !== '' && $typeSpace >= 3) {
+        $type = $this->type;
+        if (TextMetrics::width($type) > $typeSpace) {
+          $type = TextMetrics::slice($type, 0, TextMetrics::index($type, $typeSpace - 1)) . '…';
+        }
+        $writer->write($writer->width() - 1 - TextMetrics::width($type), 0, $type, $this->style->selected, $background);
+      }
     }
     $lines = self::wrap($this->summary, $width, 2);
     foreach ($lines as $index => $line) {
