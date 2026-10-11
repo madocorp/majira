@@ -197,10 +197,18 @@ class Client {
     if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
       throw new \RuntimeException("Could not create download directory: {$directory}");
     }
+    if (PHP_OS_FAMILY !== 'Windows' && !chmod($directory, 0700)) {
+      throw new \RuntimeException("Could not make download directory private: {$directory}");
+    }
     $temp = $path . '.part';
     $file = fopen($temp, 'wb');
     if ($file === false) {
       throw new \RuntimeException("Could not write attachment cache file: {$temp}");
+    }
+    if (PHP_OS_FAMILY !== 'Windows' && !chmod($temp, 0600)) {
+      fclose($file);
+      @unlink($temp);
+      throw new \RuntimeException("Could not make attachment cache file private: {$temp}");
     }
     $handle = curl_init();
     curl_setopt_array($handle, [
