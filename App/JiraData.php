@@ -21,6 +21,24 @@ class JiraData {
     );
   }
 
+  /** Verify candidate connection settings before storing them. */
+  public function verifyConnection(array $settings): array {
+    return (new Client($settings['site'], $settings['email'], $settings['apiToken']))->myself();
+  }
+
+  /** Reuse a private local copy of one Jira attachment. */
+  public function attachmentPath(array $attachment): string {
+    $url = (string)($attachment['content'] ?? '');
+    if ($url === '') {
+      throw new \RuntimeException('Attachment has no download URL.');
+    }
+    $path = AppData::file('attachments/' . hash('sha256', $url));
+    if (!is_file($path)) {
+      $this->client()->download($url, $path);
+    }
+    return $path;
+  }
+
   /** Load and cache every visible project. */
   public function projects(): array {
     $projects = [];
@@ -157,6 +175,16 @@ class JiraData {
 
   /** Search the current JQL and preserve the result page for offline startup. */
   public function tickets(string $jql, bool $more = false): array {
+    return $this->searchTickets($jql, $more, false);
+  }
+
+  /** Refresh selected columns while retaining cached results if Jira fails. */
+  public function ticketsPreservingCache(string $jql): array {
+    return $this->searchTickets($jql, false, true);
+  }
+
+  /** Run a page request with the requested cache-failure behavior. */
+  private function searchTickets(string $jql, bool $more, bool $preserveOnFailure): array {
     $cached = TicketCache::load();
     $state = ['jql' => $jql];
     if ($more && ($cached['state'] ?? null) !== $state) {
@@ -164,10 +192,10 @@ class JiraData {
     }
     $issues = $more && is_array($cached['issues'] ?? null) ? $cached['issues'] : [];
     $meta = $more && is_array($cached['meta'] ?? null) ? $cached['meta'] : [];
-    if (!$more) {
+    if (!$more && !$preserveOnFailure) {
       TicketCache::clear();
     }
-    $fields = ['summary', 'status', 'assignee', 'issuetype', 'priority', 'updated'];
+    $fields = FieldConfiguration::requestedFields(['summary', 'status', 'assignee', 'issuetype', 'priority', 'updated']);
     $token = $more ? (string)($meta['nextPageToken'] ?? '') : '';
     $page = $this->client()->search($jql, $fields, 100, $token === '' ? false : $token);
     $meta = [
@@ -183,12 +211,17 @@ class JiraData {
   /** Return a cached issue unless a fresh Jira request is requested. */
   public function ticket(string $key, bool $refresh = false): array {
     $cache = AppData::loadJson('ticket-details.json');
-    if (!$refresh && is_array($cache[$key] ?? null) && !empty($cache[$key]['_majiraRelatedFieldsLoaded'])) {
+    $settings = Settings::load();
+    $selected = FieldConfiguration::selected($settings);
+    $selectionMatches = ($cache[$key]['_majiraSelectedFields'] ?? null) === $selected
+      || !isset($settings['fields']);
+    if (!$refresh && $selectionMatches && is_array($cache[$key] ?? null) && !empty($cache[$key]['_majiraRelatedFieldsLoaded'])) {
       return $cache[$key];
     }
-    $fields = ['summary', 'description', 'status', 'assignee', 'reporter', 'priority', 'issuetype', 'created', 'updated', 'comment', 'attachment', 'labels', 'project', 'parent', 'subtasks', 'issuelinks'];
+    $fields = FieldConfiguration::requestedFields(['summary', 'description', 'status', 'assignee', 'reporter', 'priority', 'issuetype', 'created', 'updated', 'duedate', 'comment', 'attachment', 'labels', 'project', 'parent', 'subtasks', 'issuelinks'], $settings);
     $issue = $this->client()->issue($key, $fields);
     $issue['_majiraRelatedFieldsLoaded'] = true;
+    $issue['_majiraSelectedFields'] = $selected;
     $cache[$key] = $issue;
     AppData::saveJson('ticket-details.json', $cache);
     return $issue;

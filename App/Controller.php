@@ -3,9 +3,11 @@
 namespace MAJIRA\App;
 
 use MAJIRA\Jira\Adf;
+use MAJIRA\Highlighting\MarkdownHighlighter;
 use SPTK\App;
 use SPTK\Core\Window;
 use SPTK\Core\Style;
+use SPTK\Core\Widget;
 use SPTK\Events\EventContext;
 use SPTK\Events\EventDefinition;
 use SPTK\Layout\{LayoutLeaf, LayoutNode, LayoutSeparator};
@@ -53,10 +55,38 @@ class Controller {
   private static array $meta = [];
   private static array $ticket = [];
   private static string $ticketKey = '';
+  private static array $ticketAttachments = [];
+  private static array $ticketCommentRanges = [];
+  private static ?LayoutLeaf $commentViewerLeaf = null;
+  private static ?LayoutLeaf $commentEditorLeaf = null;
+  private static ?TextEditor $commentEditor = null;
+  private static ?string $commentEditingId = null;
+  private static string $commentOriginalBody = '';
+  private static bool $commentSaveRequested = false;
+  private static ?string $commentCurrentAccountId = null;
+  private static ?LayoutLeaf $attachmentPreviewLeaf = null;
+  private static ?int $attachmentPreviewRow = null;
   private const TICKET_CARDS = ['description', 'comments', 'attachments', 'related'];
   private static array $ticketExpanded = [];
   private static array $ticketCompact = [];
   private static array $ticketProperties = [];
+  private static array $ticketPropertyNodes = [];
+  private static ?LayoutNode $ticketPropertyEditorNode = null;
+  private static ?LayoutLeaf $ticketPropertyEditorLeaf = null;
+  private static ?Widget $ticketPropertyEditorWidget = null;
+  private static ?array $ticketPropertyEditModel = null;
+  private static mixed $ticketPropertySaveValue = null;
+  private static string $editingTicketProperty = '';
+  private static bool $ticketPropertySaveRequested = false;
+  private static array $ticketEditMeta = [];
+  private static string $ticketEditMetaKey = '';
+  private static ?LayoutNode $settingsLeft = null;
+  private static ?LayoutNode $settingsFieldsPanel = null;
+  private static ?LayoutLeaf $settingsFieldsLeaf = null;
+  private static ?ListView $settingsFieldsList = null;
+  private static ?array $settingsFieldOptionsDraft = null;
+  private static array $settingsSelectedDraft = [];
+  private static bool $settingsFieldsOpen = false;
   private static string $activeTicketCard = 'description';
   private static array $relatedTicketKeys = [];
   private static ?LayoutNode $ticketPropertiesPane = null;
@@ -89,6 +119,8 @@ class Controller {
   public static function initialize(EventContext $event): void {
     self::$window = array_values(App::eventLoop()->windows())[0];
     self::$data = new JiraData();
+    self::prepareFieldSettings();
+    self::prepareAttachmentPreview();
     self::prepareListSidebar();
     self::prepareBoard();
     self::prepareFilterTiles();
@@ -97,7 +129,7 @@ class Controller {
     self::$issues = is_array($cached['issues'] ?? null) ? $cached['issues'] : [];
     self::$meta = is_array($cached['meta'] ?? null) ? $cached['meta'] : [];
     $settings = Settings::load();
-    foreach (['jira-site' => 'site', 'jira-email' => 'email'] as $id => $key) {
+    foreach (['jira-site' => 'site', 'jira-email' => 'email', 'jira-token' => 'apiToken'] as $id => $key) {
       self::input('settings', $id)->setValue((string)($settings[$key] ?? ''));
     }
     self::text('settings', 'settings-unlicense')->setText(trim((string)file_get_contents(APP_DIR . '/UNLICENSE')));
@@ -1097,16 +1129,218 @@ class Controller {
     }
   }
 
-  /** Save connection settings and clear data belonging to the old account. */
-  public static function saveSettings(EventContext $event): void {
+  /** Create the in-place field selector used by both ticket screens. */
+  private static function prepareFieldSettings(): void {
+    $screen = self::$window->screen('settings');
+    self::$settingsLeft = $screen->layout->findNode('settings-left');
+    self::$settingsFieldsList = new ListView([], true, false, true, true, new Style(), 'Fields for List and Ticket');
+    self::$settingsFieldsList->setId('settings-fields-list');
+    self::$settingsFieldsList->setTips('Space moves a field between selected and available groups; Shift+Up/Down reorders; Return saves; Esc cancels.');
+    self::$settingsFieldsLeaf = new LayoutLeaf('List', '1*', '1*', self::$settingsFieldsList, [
+      new EventDefinition('change', null, self::class . '::fieldSelectionChanged'),
+      new EventDefinition('reorder', null, self::class . '::fieldOrderChanged'),
+      new EventDefinition('keyDown', 'enter', self::class . '::saveFieldSettings'),
+      new EventDefinition('keyDown', 'escape', self::class . '::cancelFieldSettings'),
+    ]);
+    self::$settingsFieldsPanel = new LayoutNode('vertical', '48', '1*', id: 'settings-fields-panel');
+    self::$settingsFieldsPanel->addLeaf(self::$settingsFieldsLeaf);
+  }
+
+  /** Load Jira fields and show a selector in place of the Settings controls. */
+  public static function openFieldSettings(EventContext $event): void {
+    $settings = Settings::load();
+    self::$settingsFieldOptionsDraft = null;
+    if (Settings::isConfigured($settings)) {
+      $catalog = null;
+      self::request('GET Jira fields', static function() use (&$catalog): void {
+        $catalog = FieldConfiguration::normalizeCatalog(self::$data->client()->fields());
+      });
+      if (is_array($catalog)) {
+        self::$settingsFieldOptionsDraft = $catalog;
+        $settings['fieldOptions'] = $catalog;
+      }
+    }
+    self::populateFieldSettings(FieldConfiguration::selected($settings), $settings);
+    $screen = self::$window->screen('settings');
+    $screen->layout->replaceChild(self::$settingsLeft, self::$settingsFieldsPanel);
+    self::$settingsFieldsOpen = true;
+    $screen->setLayout($screen->layout);
+    $screen->activateLeaf(self::$settingsFieldsLeaf);
+    self::$window->refreshLayout();
+  }
+
+  /** Preserve selected order while placing all remaining Jira fields below it. */
+  private static function populateFieldSettings(array $selected, array $settings): void {
+    $options = FieldConfiguration::options($settings);
+    $ordered = [];
+    foreach ($selected as $id) {
+      if (isset($options[$id])) {
+        $ordered[$id] = $options[$id];
+      }
+    }
+    foreach ($options as $id => $name) {
+      $ordered[$id] ??= $name;
+    }
+    $items = [];
+    foreach ($ordered as $id => $name) {
+      $items[] = ['value' => $id, 'label' => $name . '  [' . $id . ']', 'selected' => in_array($id, $selected, true)];
+    }
+    self::$settingsFieldsList->setItems($items);
+    self::$settingsSelectedDraft = $selected;
+  }
+
+  /** Place toggled fields at the selected boundary, preserving their cursor. */
+  public static function fieldSelectionChanged(EventContext $event): void {
+    if (!self::$settingsFieldsOpen) {
+      return;
+    }
+    $list = self::$settingsFieldsList;
+    $current = $list->getValue();
+    $changed = $list->activeValue();
+    if ($changed === null || in_array($changed, $current, true) === in_array($changed, self::$settingsSelectedDraft, true)) {
+      self::$settingsSelectedDraft = $current;
+      return;
+    }
+    $selected = [];
+    $available = [];
+    $changedItem = null;
+    foreach ($list->items() as $item) {
+      if ($item['value'] === $changed) {
+        $changedItem = $item;
+      } else if ($item['selected']) {
+        $selected[] = $item;
+      } else {
+        $available[] = $item;
+      }
+    }
+    if ($changedItem === null) {
+      self::$settingsSelectedDraft = $current;
+      return;
+    }
+    if ($changedItem['selected']) {
+      $selected[] = $changedItem;
+    } else {
+      array_unshift($available, $changedItem);
+    }
+    $list->setItems(array_merge($selected, $available));
+    $list->setCursorValue($changed);
+    self::$settingsSelectedDraft = $list->getValue();
+    self::$window->refreshLayout();
+  }
+
+  /** Keep manual reordering inside the selected and available groups. */
+  public static function fieldOrderChanged(EventContext $event): void {
+    if (!self::$settingsFieldsOpen) {
+      return;
+    }
+    $list = self::$settingsFieldsList;
+    $selected = [];
+    $available = [];
+    $needsGrouping = false;
+    foreach ($list->items() as $item) {
+      if ($item['selected']) {
+        $needsGrouping = $needsGrouping || $available !== [];
+        $selected[] = $item;
+      } else {
+        $available[] = $item;
+      }
+    }
+    if ($needsGrouping) {
+      $active = $list->activeValue();
+      $list->setItems(array_merge($selected, $available));
+      if ($active !== null) {
+        $list->setCursorValue($active);
+      }
+      self::$window->refreshLayout();
+    }
+    self::$settingsSelectedDraft = $list->getValue();
+  }
+
+  /** Persist one field order shared by list columns and ticket cards. */
+  public static function saveFieldSettings(EventContext $event): bool {
+    if (!self::$settingsFieldsOpen) {
+      return false;
+    }
+    $fields = self::$settingsFieldsList->getValue();
+    if ($fields === []) {
+      self::status('Select at least one field.', true);
+      return true;
+    }
+    $settings = Settings::load();
+    $settings['fields'] = $fields;
+    if (self::$settingsFieldOptionsDraft !== null) {
+      $settings['fieldOptions'] = self::$settingsFieldOptionsDraft;
+    }
+    if (!Settings::save($settings)) {
+      self::status('Could not save field settings.', true);
+      return true;
+    }
+    self::closeFieldSettings();
+    self::configureTicketPropertyTiles();
+    self::renderTickets();
+    self::renderTicket();
+    self::status('Fields saved for List and Ticket.');
+    if (Settings::isConfigured($settings)) {
+      if (self::$issues !== []) {
+        self::request('Refresh List fields', static function(): void {
+          $result = self::$data->ticketsPreservingCache((new JqlBuilder())->current());
+          self::$issues = $result['issues'];
+          self::$meta = $result['meta'];
+          self::renderTickets();
+        });
+      }
+      if (self::$ticketKey !== '') {
+        self::request('Refresh Ticket fields', static function(): void {
+          self::$ticket = self::$data->ticket(self::$ticketKey, true);
+          self::renderTicket();
+        });
+      }
+    }
+    return true;
+  }
+
+  /** Discard the selector draft and restore the connection controls. */
+  public static function cancelFieldSettings(EventContext $event): bool {
+    if (!self::$settingsFieldsOpen) {
+      return false;
+    }
+    self::closeFieldSettings();
+    return true;
+  }
+
+  /** Restore the Settings parent tile and remeasure its compact layout. */
+  private static function closeFieldSettings(): void {
+    $screen = self::$window->screen('settings');
+    self::$settingsFieldsOpen = false;
+    self::$settingsFieldOptionsDraft = null;
+    self::$settingsSelectedDraft = [];
+    $screen->layout->replaceChild(self::$settingsFieldsPanel, self::$settingsLeft);
+    $screen->setLayout($screen->layout);
+    foreach (self::$settingsLeft->leaves() as $leaf) {
+      if ($leaf->instance()->id() === 'settings-fields') {
+        $screen->selectLeaf($leaf);
+        break;
+      }
+    }
+    self::$window->refreshLayout();
+  }
+
+  /** Verify and save connection settings, then clear data for the old account. */
+  public static function connect(EventContext $event): void {
     $settings = Settings::load();
     $next = [
       'site' => rtrim(trim(self::input('settings', 'jira-site')->getValue()), '/'),
       'email' => trim(self::input('settings', 'jira-email')->getValue()),
-      'apiToken' => trim(self::input('settings', 'jira-token')->getValue()) ?: (string)($settings['apiToken'] ?? ''),
+      'apiToken' => trim(self::input('settings', 'jira-token')->getValue()),
     ];
     if (!Settings::isConfigured($next) || !preg_match('~^https://[^/]+$~i', $next['site'])) {
       self::status('Enter an HTTPS Jira site, email and API token.', true);
+      return;
+    }
+    $user = null;
+    if (!self::request('GET current Jira user', function() use ($next, &$user): void {
+      $user = self::$data->verifyConnection($next);
+    })) {
       return;
     }
     $changed = (string)($settings['site'] ?? '') !== $next['site']
@@ -1117,7 +1351,6 @@ class Controller {
       self::status('Could not save Jira settings.', true);
       return;
     }
-    self::input('settings', 'jira-token')->setValue('');
     if ($changed) {
       self::$data->clearCaches();
       BoardState::save([]);
@@ -1128,25 +1361,21 @@ class Controller {
       $settings['projectKey'] = '';
       $settings['boardId'] = '';
       $settings['sprintId'] = '';
+      $settings['fieldOptions'] = [];
+      $settings['fields'] = FieldConfiguration::DEFAULT_FIELDS;
       Settings::save($settings);
       self::$issues = [];
       self::$meta = [];
       self::renderNavigation();
       self::renderTickets();
+      self::configureTicketPropertyTiles();
+      self::renderTicket();
       self::input('list', 'jql')->setValue((new JqlBuilder())->current());
     }
     if ($changed && !self::reloadProjects($event)) {
       return;
     }
-    self::status('Jira connection saved.');
-  }
-
-  /** Test the saved Jira connection. */
-  public static function testConnection(EventContext $event): void {
-    self::request('GET current Jira user', function(): void {
-      $user = self::$data->client()->myself();
-      self::status('Connected as ' . (string)($user['displayName'] ?? $user['emailAddress'] ?? 'Jira user'));
-    });
+    self::status('Connected as ' . (string)($user['displayName'] ?? $user['emailAddress'] ?? 'Jira user'));
   }
 
   /** Clear response caches while retaining user settings. */
@@ -1544,17 +1773,426 @@ class Controller {
     }
   }
 
+  /** Discard description edits before Escape releases the editor. */
+  public static function cancelDescription(EventContext $event): void {
+    self::editor('ticket', 'ticket-description')->setValue(Adf::toText(self::$ticket['fields']['description'] ?? null));
+  }
+
+  /** Open an editor in the selected property tile when Jira permits the field. */
+  public static function editTicketProperty(EventContext $event): bool {
+    $widget = $event->widget;
+    if (!$widget instanceof FilterSummary || !str_starts_with((string)$widget->id(), 'ticket-')) {
+      return false;
+    }
+    $field = substr((string)$widget->id(), 7);
+    if (!isset(self::$ticketPropertyNodes[$field])) {
+      return false;
+    }
+    if (self::$ticketKey === '') {
+      self::status('Open a ticket before editing a property.', true);
+      return true;
+    }
+    if (in_array($field, ['key', 'created', 'updated'], true)) {
+      self::status(FieldConfiguration::label($field) . ' is managed by Jira and cannot be edited.', true);
+      return true;
+    }
+    $jiraField = FieldConfiguration::jiraId($field);
+    $model = null;
+    if ($field === 'status') {
+      $transitions = [];
+      if (!self::request('GET Jira transitions ' . self::$ticketKey, static function() use (&$transitions): void {
+        $transitions = self::$data->client()->transitions(self::$ticketKey)['transitions'] ?? [];
+      })) {
+        return true;
+      }
+      $options = [];
+      foreach ($transitions as $transition) {
+        if (is_array($transition) && (string)($transition['id'] ?? '') !== '') {
+          $options[] = ['value' => (string)$transition['id'], 'text' => (string)($transition['name'] ?? $transition['to']['name'] ?? $transition['id'])];
+        }
+      }
+      if ($options !== []) {
+        $model = ['kind' => 'transition', 'name' => 'Status', 'jiraField' => 'status', 'options' => $options, 'value' => $options[0]['value'], 'required' => true];
+      }
+    } else {
+      if (self::$ticketEditMetaKey !== self::$ticketKey) {
+        $metadata = [];
+        if (!self::request('GET Jira edit metadata ' . self::$ticketKey, static function() use (&$metadata): void {
+          $metadata = self::$data->client()->editMeta(self::$ticketKey);
+        })) {
+          return true;
+        }
+        self::$ticketEditMeta = is_array($metadata['fields'] ?? null) ? $metadata['fields'] : [];
+        self::$ticketEditMetaKey = self::$ticketKey;
+      }
+      $meta = self::$ticketEditMeta[$jiraField] ?? null;
+      if (is_array($meta)) {
+        $meta = self::propertyUserChoices($jiraField, $meta);
+        if ($meta === null) {
+          return true;
+        }
+        $model = (new TicketFieldEditModel())->build(self::$ticket, $field, $jiraField, $meta, self::$ticketProperties[$field]->title());
+      }
+    }
+    if (!is_array($model)) {
+      self::status('This property is not editable with the available Jira options.', true);
+      return true;
+    }
+    self::showTicketPropertyEditor($field, $model);
+    return true;
+  }
+
+  /** Fill user fields when edit metadata omits its selectable accounts. */
+  private static function propertyUserChoices(string $jiraField, array $meta): ?array {
+    $schema = is_array($meta['schema'] ?? null) ? $meta['schema'] : [];
+    if (!in_array($jiraField, ['assignee', 'reporter'], true) || !empty($meta['allowedValues'])
+      || ($schema['type'] ?? '') !== 'user') {
+      return $meta;
+    }
+    $users = [];
+    if (!self::request('GET Jira users ' . self::$ticketKey, static function() use ($jiraField, &$users): void {
+      $users = $jiraField === 'assignee'
+        ? self::$data->client()->assignableUsersForIssue(self::$ticketKey)
+        : self::$data->client()->users();
+    })) {
+      return null;
+    }
+    $current = self::$ticket['fields'][$jiraField] ?? null;
+    if (is_array($current) && (string)($current['accountId'] ?? '') !== '') {
+      $users[] = $current;
+    }
+    $deduplicated = [];
+    foreach ($users as $user) {
+      if (is_array($user) && (string)($user['accountId'] ?? '') !== '') {
+        $deduplicated[(string)$user['accountId']] = $user;
+      }
+    }
+    uasort($deduplicated, static fn(array $a, array $b): int => strcasecmp((string)($a['displayName'] ?? ''), (string)($b['displayName'] ?? '')));
+    $meta['allowedValues'] = array_values($deduplicated);
+    return $meta;
+  }
+
+  /** Replace the two-row summary with an Input, List, or calendar in the same card. */
+  private static function showTicketPropertyEditor(string $field, array $model): void {
+    $kind = (string)$model['kind'];
+    $name = (string)$model['name'];
+    $value = $model['value'] ?? '';
+    $height = 2;
+    if (in_array($kind, ['choice', 'transition', 'multi-choice', 'boolean'], true)) {
+      $items = [];
+      $options = $kind === 'boolean'
+        ? [['value' => '1', 'text' => 'Yes'], ['value' => '0', 'text' => 'No']]
+        : (array)($model['options'] ?? []);
+      foreach ($options as $option) {
+        $items[] = ['value' => (string)$option['value'], 'label' => (string)($option['text'] ?? $option['value'])];
+      }
+      $widget = new ListView($items, $kind === 'multi-choice', true, true, false, new Style(), $name);
+      $selected = $kind === 'boolean' ? ($value ? '1' : '0') : $value;
+      if ($selected !== '' && $selected !== [] && in_array($selected, $widget->values(), true)) {
+        $widget->setValue($selected);
+      } else if ($kind === 'multi-choice') {
+        $widget->setValue(is_array($selected) ? $selected : []);
+      }
+      $height = max(4, min(11, count($items) + 1));
+    } else if ($kind === 'date') {
+      $widget = new DateSelector((string)$value, new Style(), $name);
+      $height = 10;
+    } else if ($kind === 'doc') {
+      $widget = new TextEditor((string)$value, new Style(), true, title: $name);
+      $widget->setHighlighter(new MarkdownHighlighter());
+      $height = 8;
+    } else {
+      $widget = new Input((string)$value, new Style(), label: $name);
+    }
+    $widget->setId('ticket-property-editor');
+    $saveKey = $kind === 'doc' ? 'ctrl+enter' : 'enter';
+    $widget->setTips('Esc cancels; ' . ($kind === 'doc' ? 'Ctrl+Return' : 'Return') . ' saves'
+      . ($kind === 'date' && empty($model['required']) ? '; Ctrl+Delete clears.' : '.'));
+    self::$ticketPropertyEditorWidget = $widget;
+    self::$ticketPropertyEditModel = $model;
+    self::$editingTicketProperty = $field;
+    self::$ticketPropertySaveRequested = false;
+    self::$ticketPropertyEditorLeaf = new LayoutLeaf($kind === 'date' ? 'DateSelector' : ($kind === 'doc' ? 'TextEditor' : ($widget instanceof ListView ? 'List' : 'Input')), '1*', '1*', $widget, [
+      new EventDefinition('keyDown', $saveKey, self::class . '::requestTicketPropertySave'),
+      new EventDefinition('keyDown', 'ctrl+delete', self::class . '::clearTicketProperty'),
+      new EventDefinition('deactivate', null, self::class . '::finishTicketPropertyEdit'),
+    ]);
+    self::$ticketPropertyEditorNode = new LayoutNode('vertical', '1*', (string)$height, id: 'ticket-property-edit-' . $field);
+    self::$ticketPropertyEditorNode->addLeaf(self::$ticketPropertyEditorLeaf);
+    $screen = self::$window->screen('ticket');
+    $screen->layout->findNode('ticket-properties')->replaceChild(self::$ticketPropertyNodes[$field], self::$ticketPropertyEditorNode);
+    $screen->setLayout($screen->layout);
+    $screen->activateLeaf(self::$ticketPropertyEditorLeaf);
+    self::$window->refreshLayout();
+    self::scrollTicketPropertyIntoView();
+  }
+
+  /** Keep a resized property editor visible inside the right pane. */
+  private static function scrollTicketPropertyIntoView(): void {
+    $pane = self::$window->screen('ticket')->layout->findNode('ticket-properties-pane');
+    $editor = self::$ticketPropertyEditorNode?->grid();
+    $viewport = $pane?->grid();
+    if ($editor === null || $viewport === null) {
+      return;
+    }
+    $bottom = $editor->y + min($editor->height, $viewport->height);
+    if ($bottom > $viewport->y + $viewport->height) {
+      $pane->setScrollOffset($pane->scrollOffset() + $bottom - $viewport->y - $viewport->height);
+      self::$window->refreshLayout();
+    }
+  }
+
+  /** Validate the editor value before Return releases its widget. */
+  public static function requestTicketPropertySave(EventContext $event): bool {
+    if (self::$ticketPropertyEditModel === null || self::$ticketPropertyEditorWidget === null) {
+      return false;
+    }
+    $widget = self::$ticketPropertyEditorWidget;
+    $kind = (string)self::$ticketPropertyEditModel['kind'];
+    if ($widget instanceof DateSelector && $widget->dateText() !== $widget->getValue()) {
+      self::status('Enter a valid date before saving.', true);
+      return true;
+    }
+    $value = match (true) {
+      $widget instanceof Input, $widget instanceof TextEditor, $widget instanceof DateSelector => $widget->getValue(),
+      $widget instanceof ListView => $widget->getValue(),
+      default => null,
+    };
+    if ($kind === 'transition') {
+      self::$ticketPropertySaveValue = (string)$value;
+    } else {
+      try {
+        self::$ticketPropertySaveValue = (new TicketFieldEditModel())->saveValue(self::$ticketPropertyEditModel, $value);
+      } catch (\Throwable $error) {
+        self::status($error->getMessage(), true);
+        return true;
+      }
+    }
+    self::$ticketPropertySaveRequested = true;
+    return false;
+  }
+
+  /** Clear an optional date from its calendar tile. */
+  public static function clearTicketProperty(EventContext $event): bool {
+    if (self::$ticketPropertyEditModel === null || self::$ticketPropertyEditModel['kind'] !== 'date') {
+      return false;
+    }
+    if (!empty(self::$ticketPropertyEditModel['required'])) {
+      self::status('This property requires a date.', true);
+      return true;
+    }
+    self::$ticketPropertySaveValue = null;
+    self::$ticketPropertySaveRequested = true;
+    self::$window->screen('ticket')->release();
+    return true;
+  }
+
+  /** Restore the summary and write the accepted field or workflow transition. */
+  public static function finishTicketPropertyEdit(EventContext $event): void {
+    if (self::$editingTicketProperty === '') {
+      return;
+    }
+    $field = self::$editingTicketProperty;
+    $model = self::$ticketPropertyEditModel;
+    $value = self::$ticketPropertySaveValue;
+    $save = self::$ticketPropertySaveRequested;
+    self::$editingTicketProperty = '';
+    self::$ticketPropertyEditModel = null;
+    self::$ticketPropertySaveRequested = false;
+    $screen = self::$window->screen('ticket');
+    $screen->layout->findNode('ticket-properties')->replaceChild(self::$ticketPropertyEditorNode, self::$ticketPropertyNodes[$field]);
+    $screen->setLayout($screen->layout);
+    $screen->selectLeaf(self::$ticketPropertyNodes[$field]->leaves()[0]);
+    self::$window->refreshLayout();
+    if (!$save) {
+      return;
+    }
+    $jiraField = (string)$model['jiraField'];
+    $saved = self::request('Update ' . $jiraField . ' on ' . self::$ticketKey, static function() use ($model, $jiraField, $value): void {
+      if ($model['kind'] === 'transition') {
+        self::$data->client()->transitionIssue(self::$ticketKey, (string)$value);
+      } else {
+        self::$data->client()->updateIssueFields(self::$ticketKey, [$jiraField => $value]);
+      }
+      self::$ticket = self::$data->ticket(self::$ticketKey, true);
+      self::renderTicket();
+    });
+    if ($saved) {
+      self::$ticketEditMetaKey = '';
+    }
+  }
+
+  /** Open the comment under the read-only cursor when it belongs to this account. */
+  public static function editSelectedComment(EventContext $event): bool {
+    if (!self::commentViewerSelected($event) || self::$window->screen('ticket')->activeLeaf()?->instance() !== $event->widget) {
+      return false;
+    }
+    $comment = self::selectedComment($event);
+    if ($comment === null) {
+      return true;
+    }
+    if (!self::canModifyComment($comment)) {
+      return true;
+    }
+    self::openCommentEditor((string)$comment['id'], Adf::toText($comment['body'] ?? null));
+    return true;
+  }
+
+  /** Open a blank comment draft in the same ticket card. */
+  public static function newComment(EventContext $event): bool {
+    if (!self::commentViewerSelected($event)) {
+      return false;
+    }
+    if (self::$ticketKey === '') {
+      self::status('Open a ticket before adding a comment.', true);
+      return true;
+    }
+    self::openCommentEditor('', '');
+    return true;
+  }
+
+  /** Ask before deleting the selected comment. */
+  public static function deleteSelectedComment(EventContext $event): bool {
+    $comment = self::selectedComment($event);
+    if ($comment === null) {
+      return false;
+    }
+    if (!self::canModifyComment($comment)) {
+      return true;
+    }
+    $id = (string)$comment['id'];
+    $key = self::$ticketKey;
+    $author = (string)($comment['author']['displayName'] ?? 'Unknown');
+    self::$window->screen('ticket')->statusBar->confirm('Delete comment by ' . $author . '?', static function() use ($key, $id): void {
+      if (self::$ticketKey !== $key) {
+        return;
+      }
+      self::writeComment('DELETE comment', static function() use ($key, $id): void {
+        self::$data->client()->deleteComment($key, $id);
+      });
+    }, static fn(): bool => false);
+    return true;
+  }
+
+  /** Mark Ctrl+Return as a save and keep empty drafts open. */
+  public static function requestCommentSave(EventContext $event): bool {
+    if (trim(self::$commentEditor?->getValue() ?? '') === '') {
+      self::status('Comment cannot be empty.', true);
+      return true;
+    }
+    self::$commentSaveRequested = true;
+    return false;
+  }
+
+  /** Return to the read-only viewer after Escape or a screen change. */
+  public static function finishCommentEdit(EventContext $event): void {
+    if (self::$commentEditingId === null) {
+      return;
+    }
+    $id = self::$commentEditingId;
+    $body = self::$commentEditor->getValue();
+    $save = self::$commentSaveRequested && ($id === '' || $body !== self::$commentOriginalBody);
+    self::$commentEditingId = null;
+    self::$commentOriginalBody = '';
+    self::$commentSaveRequested = false;
+    $screen = self::$window->screen('ticket');
+    $card = $screen->layout->findNode('ticket-comments-card');
+    $card->replaceChild(self::$commentEditorLeaf, self::$commentViewerLeaf);
+    $screen->setLayout($screen->layout);
+    $screen->activateLeaf(self::$commentViewerLeaf);
+    if (!$save) {
+      return;
+    }
+    $key = self::$ticketKey;
+    self::writeComment($id === '' ? 'POST comment' : 'PUT comment', static function() use ($key, $id, $body): void {
+      if ($id === '') {
+        self::$data->client()->addComment($key, Adf::fromMarkdown($body));
+      } else {
+        self::$data->client()->updateComment($key, $id, Adf::fromMarkdown($body));
+      }
+    });
+  }
+
+  /** Ignore Escape so release discards the current comment draft. */
+  public static function cancelCommentEdit(EventContext $event): void {
+    self::$commentSaveRequested = false;
+  }
+
+  /** Locate the comment whose source lines contain the viewer cursor. */
+  private static function selectedComment(EventContext $event): ?array {
+    if (!self::commentViewerSelected($event)) {
+      return null;
+    }
+    [$line] = self::text('ticket', 'ticket-comments')->cursorPosition();
+    foreach (self::$ticketCommentRanges as [$start, $end, $comment]) {
+      if ($line >= $start && $line < $end) {
+        return $comment;
+      }
+    }
+    self::status('No comment under the cursor.', true);
+    return null;
+  }
+
+  /** Apply comment shortcuts only while the read-only comment tile is selected. */
+  private static function commentViewerSelected(EventContext $event): bool {
+    return self::$commentEditingId === null && self::$ticketKey !== ''
+      && $event->widget instanceof Text && $event->widget->id() === 'ticket-comments';
+  }
+
+  /** Check Jira authorship before opening an edit or delete action. */
+  private static function canModifyComment(array $comment): bool {
+    $id = (string)($comment['id'] ?? '');
+    $author = (string)($comment['author']['accountId'] ?? '');
+    if ($id === '' || $author === '') {
+      self::status('This comment cannot be modified.', true);
+      return false;
+    }
+    if (self::$commentCurrentAccountId === null) {
+      try {
+        self::$commentCurrentAccountId = (string)(self::$data->client()->myself()['accountId'] ?? '');
+      } catch (\Throwable $error) {
+        self::status('Check comment ownership failed: ' . $error->getMessage(), true);
+        return false;
+      }
+    }
+    if (self::$commentCurrentAccountId === '' || $author !== self::$commentCurrentAccountId) {
+      self::status('Only your own comments can be modified.', true);
+      return false;
+    }
+    return true;
+  }
+
+  /** Swap the comment history for a single editable comment body. */
+  private static function openCommentEditor(string $id, string $body): void {
+    $screen = self::$window->screen('ticket');
+    $screen->release();
+    self::$commentEditingId = $id;
+    self::$commentOriginalBody = $body;
+    self::$commentSaveRequested = false;
+    self::$commentEditor->setTitle($id === '' ? 'New comment' : 'Edit comment');
+    self::$commentEditor->setValue($body);
+    $card = $screen->layout->findNode('ticket-comments-card');
+    $card->replaceChild(self::$commentViewerLeaf, self::$commentEditorLeaf);
+    $screen->setLayout($screen->layout);
+    $screen->activateLeaf(self::$commentEditorLeaf);
+    self::$window->refreshLayout();
+  }
+
+  /** Run a comment mutation and refresh the same ticket card after success. */
+  private static function writeComment(string $label, callable $operation): void {
+    self::request($label . ' ' . self::$ticketKey, static function() use ($operation): void {
+      $operation();
+      self::$ticket = self::$data->ticket(self::$ticketKey, true);
+      self::renderTicket();
+    });
+  }
+
   /** Open the related issue selected in the ticket card. */
   public static function openRelatedTicket(EventContext $event): void {
     $key = self::$relatedTicketKeys[self::table('ticket', 'ticket-related')->cursorRow()] ?? '';
     if ($key !== '') {
       self::openTicket($key);
     }
-  }
-
-  /** Discard changes to the displayed comment history. */
-  public static function restoreTicketComments(EventContext $event): void {
-    self::editor('ticket', 'ticket-comments')->setValue(self::$ticketKey === '' ? '' : self::ticketCommentsText());
   }
 
   /** Load tickets and show them only when the request succeeds. */
@@ -1637,6 +2275,7 @@ class Controller {
   private static function clearTicket(): void {
     self::$ticket = [];
     self::$ticketKey = '';
+    self::$commentCurrentAccountId = null;
     self::renderTicket();
     self::resetTicketDeck();
   }
@@ -1747,17 +2386,13 @@ class Controller {
   private static function renderTickets(): void {
     $table = self::table('list', 'tickets');
     $cursor = $table->cursorRow();
+    $selected = FieldConfiguration::selected();
+    $header = array_map(FieldConfiguration::label(...), $selected);
     $rows = [];
     foreach (self::$issues as $issue) {
-      $fields = is_array($issue['fields'] ?? null) ? $issue['fields'] : [];
-      $rows[] = [
-        (string)($issue['key'] ?? ''),
-        (string)($fields['summary'] ?? ''),
-        (string)($fields['status']['name'] ?? ''),
-        (string)($fields['assignee']['displayName'] ?? 'Unassigned'),
-      ];
+      $rows[] = array_map(static fn(string $id): string => FieldConfiguration::value($issue, $id), $selected);
     }
-    $table->setRows(['Key', 'Summary', 'Status', 'Assignee'], $rows);
+    $table->setRows($header, $rows);
     $table->setCursor($cursor);
   }
 
@@ -2155,6 +2790,20 @@ class Controller {
   /** Keep every ticket widget visible while giving the selected card more height. */
   private static function prepareTicketTiles(): void {
     $screen = self::$window->screen('ticket');
+    $markdown = new MarkdownHighlighter();
+    self::editor('ticket', 'ticket-description')->setHighlighter($markdown);
+    self::text('ticket', 'ticket-comments')->setHighlighter($markdown);
+    self::$commentViewerLeaf = $screen->layout->findNode('ticket-comments-card')->leaves()[0];
+    self::$commentEditor = new TextEditor('', new Style(), true, title: 'Comment');
+    self::$commentEditor->setId('ticket-comment-editor');
+    self::$commentEditor->setTips('Esc cancels; Ctrl+Return saves the comment.');
+    self::$commentEditor->setHighlighter($markdown);
+    self::$commentEditorLeaf = new LayoutLeaf('TextEditor', '1*', '1*', self::$commentEditor, [
+      new EventDefinition('select', null, self::class . '::expandTicketCard'),
+      new EventDefinition('keyDown', 'escape', self::class . '::cancelCommentEdit'),
+      new EventDefinition('keyDown', 'ctrl+enter', self::class . '::requestCommentSave'),
+      new EventDefinition('deactivate', null, self::class . '::finishCommentEdit'),
+    ]);
     $deck = $screen->layout->findNode('ticket-deck');
     foreach (self::TICKET_CARDS as $key) {
       $node = $deck->findNode('ticket-' . $key . '-card');
@@ -2166,15 +2815,8 @@ class Controller {
       self::$ticketExpanded[$key] = $expanded;
       self::$ticketCompact[$key] = $compact;
     }
-    foreach (['status' => 'Status', 'type' => 'Type', 'priority' => 'Priority', 'assignee' => 'Assignee', 'reporter' => 'Reporter', 'created' => 'Created', 'updated' => 'Updated', 'labels' => 'Labels'] as $key => $label) {
-      $node = $screen->layout->findNode('ticket-property-' . $key);
-      $old = $node->leaves()[0];
-      $summary = new FilterSummary($label);
-      $summary->setId('ticket-' . $key);
-      $node->replaceChild($old, new LayoutLeaf('FilterSummary', '1*', '1*', $summary));
-      self::$ticketProperties[$key] = $summary;
-    }
     self::$ticketPropertiesPane = $screen->layout->findNode('ticket-properties-pane');
+    self::configureTicketPropertyTiles();
     self::$ticketHistoryList = new ListView([], false, false, false, false, new Style(), 'History');
     self::$ticketHistoryList->setId('ticket-history');
     self::$ticketHistoryList->setTips('Up/Down previews tickets; Return opens one; Esc closes History.');
@@ -2190,12 +2832,39 @@ class Controller {
     self::$window->refreshLayout();
   }
 
+  /** Build property cards in the order shared with the ticket list. */
+  private static function configureTicketPropertyTiles(): void {
+    $pane = self::$ticketPropertiesPane ?? self::$window->screen('ticket')->layout->findNode('ticket-properties-pane');
+    $old = $pane->findNode('ticket-properties');
+    $properties = new LayoutNode('vertical', '1*', 'auto', id: 'ticket-properties');
+    self::$ticketProperties = [];
+    self::$ticketPropertyNodes = [];
+    foreach (FieldConfiguration::selected() as $id) {
+      if (in_array($id, ['key', 'summary'], true)) {
+        continue;
+      }
+      if (self::$ticketPropertyNodes !== []) {
+        $properties->addSeparator(new LayoutSeparator());
+      }
+      $node = new LayoutNode('vertical', '1*', '2', id: 'ticket-property-' . $id);
+      $summary = new FilterSummary(FieldConfiguration::label($id));
+      $summary->setId('ticket-' . $id);
+      $node->addLeaf(new LayoutLeaf('FilterSummary', '1*', '1*', $summary));
+      $properties->addNode($node);
+      self::$ticketProperties[$id] = $summary;
+      self::$ticketPropertyNodes[$id] = $node;
+    }
+    $pane->replaceChild($old, $properties);
+    self::$window->screen('ticket')->setLayout(self::$window->screen('ticket')->layout);
+  }
+
   /** Expand the ticket card reached with an arrow key. */
   public static function expandTicketCard(EventContext $event): void {
     $id = $event->widget?->id() ?? '';
     $key = match ($id) {
       'ticket-description' => 'description',
       'ticket-comments' => 'comments',
+      'ticket-comment-editor' => 'comments',
       'ticket-attachments' => 'attachments',
       'ticket-related' => 'related',
       default => '',
@@ -2319,32 +2988,143 @@ class Controller {
     self::title('ticket', 'ticket-key')->setText(self::$ticketKey === '' ? 'Ticket' : self::$ticketKey);
     self::input('ticket', 'ticket-summary')->setValue((string)($fields['summary'] ?? ''));
     self::editor('ticket', 'ticket-description')->setValue(Adf::toText($fields['description'] ?? null));
-    self::editor('ticket', 'ticket-comments')->setValue(self::$ticketKey === '' ? '' : self::ticketCommentsText());
+    self::text('ticket', 'ticket-comments')->setText(self::$ticketKey === '' ? '' : self::ticketCommentsText());
     $attachments = [];
+    self::$ticketAttachments = [];
     foreach ($fields['attachment'] ?? [] as $attachment) {
       if (is_array($attachment)) {
+        self::$ticketAttachments[] = $attachment;
         $attachments[] = [(string)($attachment['author']['displayName'] ?? ''), (string)($attachment['filename'] ?? ''), self::attachmentSize((int)($attachment['size'] ?? 0)) . '  ' . substr((string)($attachment['created'] ?? ''), 0, 10)];
       }
     }
     self::table('ticket', 'ticket-attachments')->setRows(['Author', 'File', 'Size / created'], $attachments);
     self::renderRelatedTickets($fields);
-    foreach (['status' => $fields['status']['name'] ?? '', 'type' => $fields['issuetype']['name'] ?? '', 'priority' => $fields['priority']['name'] ?? '', 'assignee' => $fields['assignee']['displayName'] ?? 'Unassigned', 'reporter' => $fields['reporter']['displayName'] ?? '', 'created' => substr((string)($fields['created'] ?? ''), 0, 16), 'updated' => substr((string)($fields['updated'] ?? ''), 0, 16), 'labels' => implode(', ', $fields['labels'] ?? [])] as $key => $value) {
-      self::$ticketProperties[$key]->setValue(self::$ticketKey === '' ? '' : ((string)$value !== '' ? (string)$value : '-'));
+    foreach (self::$ticketProperties as $key => $summary) {
+      $value = self::$ticketKey === '' ? '' : FieldConfiguration::value(self::$ticket, $key);
+      $value = trim(preg_replace('/\s+/u', ' ', $value) ?? '');
+      $summary->setValue($value !== '' ? $value : '-');
     }
+  }
+
+  /** Let the preview body occupy the entire window, without selector buttons. */
+  private static function prepareAttachmentPreview(): void {
+    $screen = self::$window->screen('attachment-preview');
+    $body = $screen->layout->findNode('attachment-preview-body');
+    if ($body === null) {
+      throw new \LogicException('Attachment preview layout is missing.');
+    }
+    $screen->setLayout($body);
+  }
+
+  /** Open the selected attachment on a full-window screen. */
+  public static function openAttachmentPreview(EventContext $event): void {
+    self::showAttachmentPreview(self::table('ticket', 'ticket-attachments')->cursorRow());
+  }
+
+  /** Advance through the ticket's attachment rows while previewing. */
+  public static function nextAttachmentPreview(EventContext $event): bool {
+    return self::moveAttachmentPreview(1);
+  }
+
+  /** Go back through the ticket's attachment rows while previewing. */
+  public static function previousAttachmentPreview(EventContext $event): bool {
+    return self::moveAttachmentPreview(-1);
+  }
+
+  private static function moveAttachmentPreview(int $offset): bool {
+    if (self::$window->currentScreenId() !== 'attachment-preview' || self::$attachmentPreviewRow === null) {
+      return false;
+    }
+    $row = self::$attachmentPreviewRow + $offset;
+    if (!isset(self::$ticketAttachments[$row])) {
+      return true;
+    }
+    self::showAttachmentPreview($row);
+    return true;
+  }
+
+  private static function showAttachmentPreview(int $row): void {
+    $attachment = self::$ticketAttachments[$row] ?? null;
+    if ($attachment === null) {
+      return;
+    }
+    self::table('ticket', 'ticket-attachments')->setCursor($row);
+    $name = (string)($attachment['filename'] ?? 'Attachment');
+    $kind = AttachmentPreview::kind($attachment);
+    if ($kind === null) {
+      self::$window->setCurrentScreenId('ticket');
+      self::status('Preview not supported: ' . $name, true);
+      return;
+    }
+    self::replaceAttachmentPreview(new Text('Loading attachment...'), 'Text');
+    self::$window->setCurrentScreenId('attachment-preview');
+    self::$window->refreshLayout();
+    try {
+      $widget = AttachmentPreview::widget($kind, self::$data->attachmentPath($attachment), $name);
+    } catch (\Throwable $error) {
+      self::$window->setCurrentScreenId('ticket');
+      self::status('Load attachment ' . $name . ' failed: ' . $error->getMessage(), true);
+      self::$window->refreshLayout();
+      return;
+    }
+    self::replaceAttachmentPreview($widget, ucfirst($kind));
+    self::$attachmentPreviewRow = $row;
+    self::$window->screen('attachment-preview')->activateLeaf(self::$attachmentPreviewLeaf);
+    self::$window->refreshLayout();
+  }
+
+  /** Swap the content of the full-window preview without changing screens. */
+  private static function replaceAttachmentPreview(Widget $widget, string $type): void {
+    $widget->setId('attachment-preview-content');
+    $leaf = new LayoutLeaf($type, '1*', '1*', $widget);
+    $screen = self::$window->screen('attachment-preview');
+    $body = $screen->layout->findNode('attachment-preview-body');
+    $old = self::$attachmentPreviewLeaf ?? $body->leaves()[0];
+    if (!$body->replaceChild($old, $leaf)) {
+      throw new \LogicException('Attachment preview layout is missing.');
+    }
+    self::$attachmentPreviewLeaf = $leaf;
+    $screen->setLayout($screen->layout);
+  }
+
+  /** Return to the ticket while preserving its attachment row. */
+  public static function closeAttachmentPreview(EventContext $event): bool {
+    if (self::$window->currentScreenId() !== 'attachment-preview') {
+      return false;
+    }
+    self::$window->setCurrentScreenId('ticket');
+    return true;
   }
 
   /** Format the current issue's comment history for the viewer. */
   private static function ticketCommentsText(): string {
-    $comments = [];
+    $lines = [];
+    self::$ticketCommentRanges = [];
     foreach (self::$ticket['fields']['comment']['comments'] ?? [] as $comment) {
       if (!is_array($comment)) {
         continue;
       }
+      if ($lines !== []) {
+        $lines[] = '';
+      }
+      $start = count($lines);
       $author = (string)($comment['author']['displayName'] ?? 'Unknown');
-      $date = substr((string)($comment['created'] ?? ''), 0, 16);
-      $comments[] = $author . '  ' . $date . "\n" . Adf::toText($comment['body'] ?? null);
+      $date = (string)($comment['created'] ?? '');
+      if ($date !== '') {
+        try {
+          $date = (new \DateTimeImmutable($date))->format('Y-m-d H:i:s');
+        } catch (\Throwable) {
+          $date = (string)($comment['created'] ?? '');
+        }
+      }
+      $lines[] = ">>> {$author} [{$date}]";
+      $lines[] = '';
+      foreach (explode("\n", Adf::toText($comment['body'] ?? null)) as $line) {
+        $lines[] = $line;
+      }
+      self::$ticketCommentRanges[] = [$start, count($lines), $comment];
     }
-    return $comments === [] ? '(no comments)' : implode("\n\n", $comments);
+    return $lines === [] ? '(no comments)' : implode("\n", $lines);
   }
 
   /** Fill the related-ticket table from the parent, children, and issue links. */

@@ -1,0 +1,9 @@
+<Screen>
+  <Event type="keyDown" key="escape" action="MAJIRA\App\Controller::closeAttachmentPreview" />
+  <Event type="keyDown" key="enter" action="MAJIRA\App\Controller::closeAttachmentPreview" />
+  <Event type="keyUp" key="space" action="MAJIRA\App\Controller::nextAttachmentPreview" />
+  <Event type="keyDown" key="backspace" action="MAJIRA\App\Controller::previousAttachmentPreview" />
+  <Layout id="attachment-preview-body">
+    <Text id="attachment-preview-placeholder" height="1*">Attachment preview</Text>
+  </Layout>
+</Screen>

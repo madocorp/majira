@@ -1,22 +1,146 @@
 # MaJira
 
-MaJira is a tile based Jira Cloud browser built with the current SPTK. Start it with `php majira.php` in a graphical session.
+MaJira is a graphical Jira Cloud browser built with SPTK. Search issues with
+filters or JQL, browse sprint boards, and work with ticket details. It keeps
+local caches so previously loaded issues remain available between sessions.
 
-Settings (F5) centers the logo in the available space above the connection fields. T tests the connection and S saves it; R clears Jira caches and Q quits. The right column contains About and the full text from `UNLICENSE`, with the Unlicense text scrollable when it does not fit. A separator divides the screen from its status bar.
+## Requirements
 
-On first use, open **Settings** (F5), enter the Jira site URL, email and API token, then save and test the connection. The saved token is not shown on the screen when the app opens; leave its field blank to keep it. Project choices load automatically after connecting. On **Filters** (F2), select a project or choose **Any project**, and, if needed, a board and sprint. Confirming a project with Return or Esc loads its boards and its status, type, available priority, and assignee choices, even with no board selected. **Any project** uses global statuses, visible issue types, site priorities, and users returned by Jira's user search; that user search requires Browse users and groups permission and is limited to the first 1,000 users. Confirming a board with Return or Esc loads its sprints. Moving through project, board, and sprint lists does not fetch data. Their choices are cached separately by project or board, including empty results. **Clear cache** on Filters discards these choice caches and reloads projects; confirm a project or board to fetch its choices again. Cached tickets remain available. Project and sprint become JQL clauses. Board selection narrows the available sprint choices; **No board selected** adds no condition to ticket searches. The choice lists, ticket search, ticket details and filter options are cached in SPTK's private application data directory. Cached tickets are restored at startup. On **List** (F1), R refreshes the first page. When more results are available, the status bar shows the loaded count and M (or F6) loads the next page.
+- PHP 8.2 or newer on the command line, with FFI, XMLReader, mbstring, intl,
+  cURL, and PCNTL enabled. GD is needed for some image formats.
+- [SPTK](https://github.com/madocorp/SPTK), with SDL3 and SDL3_ttf available
+  as described in its installation instructions. SDL3_ttf also needs FreeType
+  and HarfBuzz; PNG images require `libpng16.so.16`.
+- A graphical desktop session and a Jira Cloud account with an API token.
 
-The **Filters** screen shows saved filters on the left, a deck of filter cards in the middle, and actions on the right. The first card contains the filter name. **New filter** creates a blank builder filter named `new` and activates its name input; editing the name saves or renames it. Duplicate names are rejected. The saved list does not search as you type; Shift+Up/Down reorders its entries and saves their order. Moving through the saved list loads each filter and opens its name card in builder mode. Up and Down move between builder cards; the selected card expands while the others show their current values in two lines. Right from saved filters or Left from the action column selects the open card. Open a list with Return, make a selection, and press Esc to keep it. Created and Updated have independent From and To slots. Both are empty by default: focus a slot and press Return to add and activate a calendar, or press Delete on a calendar to remove it. Either date may be used alone; To includes the whole selected day. Builder changes save immediately, and **Apply** runs the current filter. **Clear filter** resets the current filter's values and query while keeping its name and mode; other saved filters are unchanged. **Delete filter** loads the next saved filter, or the previous one when the last row is deleted. The action shortcuts are N (new), J (JQL), A (apply), D (delete), C (clear filter), and R (clear cache). **Switch to JQL** generates a query from the builder values and replaces the builder cards with the name input and an editable JQL field. JQL edits save immediately. This choice is permanent for that filter; create a new filter to use the builder again. The List sidebar starts with **Last JQL**, followed by saved filters. It highlights the active saved filter, or **Last JQL** after a direct edit. Return applies the highlighted item and activates the table when the search returns tickets; Esc closes the sidebar and restores the previous tile focus. Empty results leave the current tile focused. **Last JQL** restores the most recent direct edit after switching to a saved filter. Press F to open the sidebar, including while the ticket table is active. Alternatively, edit raw JQL on **List**; it runs when editing ends and activates the table if tickets are found. The **Ticket** screen (F4) shows details, allows title and description edits, shows comments, and opens related tickets from their table. Jira requests appear in the status bar before they run.
+Check PHP with:
 
-The **Board** screen (F3) has its own project, board, and sprint selectors, independent of the List filters. Each selector button opens a list below the selector row; Return chooses a value, and Esc closes the list. Choosing a project or board clears the displayed issues. Choosing a sprint loads its issues into the board's configured status columns, including future and closed sprints. Columns without visible cards are hidden. Complete Board results are cached by board and sprint and restored when the app opens. Each issue is a four-row tile showing its key and type on the first row, a wrapped summary, and the assignee name. Dark blue tile separators divide adjacent cards; stronger separators divide columns. Return on a card opens its ticket. PgUp and PgDown first jump to the visible edge of the current column, then move a full page on the next press. Home and End do the same across visible columns. F opens a one-row assignee filter above the board; press 0 for Everybody or 1–5 for a person, ordered by ticket count. Press F again to see the next five people, or Esc to close the row. R fetches the current sprint again and replaces its cached result. Press ? on any selected tile for help; Return or Esc returns to that tile. Before a sprint is loaded, the Board status bar stays empty until help or an application message appears. Action results and errors require Return or Esc to acknowledge. Jira requests show a locked information message while they run; ticket counts remain visible only on List as normal-colored guidance, and completion messages disappear after a short delay. The current pass does not yet include the old app's workflow transitions, attachment download, field chooser, comment editing, or complete filter menu.
+```sh
+php --version
+php -m | grep -Ei '^(FFI|xmlreader|mbstring|intl|curl|pcntl|gd)$'
+```
 
-The Board shows at most four status columns at once. Its status bar lists every
-column title from left to right, with `**` around the current one. Temporary
-messages cover this map, then restore it when dismissed. Left and Right move
-between columns; pressing an arrow at a visible edge reveals the next column. Up and Down move between cards and scroll within the current column. Each column heading shows its total issue count and the numbers of cards hidden above (▲) or below (▼).
+Install missing PHP extensions and native libraries with your system's package
+manager. Package names vary by system.
 
-PHP extensions required by SPTK and the Jira client include FFI, SDL dependencies, XMLReader, mbstring, curl and pcntl. The application stores settings and Jira caches through `SPTK\Core\AppData`; keep that private directory out of version control.
+## Installation
 
-The Ticket screen restores the last opened ticket from cached details when the app starts; it stays empty until a ticket has been opened at least once. It selects the editable title and opens the Description card whenever a ticket loads. The title sits above a four-card deck. Description, comments, attachments, and related tickets remain visible in every card; the selected card gets half the deck height while the others show as many scrollable rows as fit. The right column shows the ticket key and separate two-line property cards, with Create (C) and History (H) buttons at the bottom. The New Ticket screen loads issue types automatically and uses C to create or Esc to cancel. Esc first closes an active List or editor using its normal behavior; pressing Esc again cancels. History replaces the property cards with a most-recent-first list of unique tickets shown on the Ticket screen. Moving its cursor previews cached ticket details on the left; Return opens the highlighted ticket, and Esc closes History and restores the previous ticket. Esc or Return after editing the title saves it; Esc or Ctrl+Return after editing the description saves it. The Comments card contains one TextEditor for viewing comment history. Attachment and related-ticket tables use a whole-row cursor; Return on a related ticket opens it. R refreshes the ticket. Property value editors and attachment actions are planned for a later pass.
+MaJira is installed manually; it does not use Composer. This example installs
+both projects for one user:
 
-Run `php Tests/ScreenShortcuts.php` for screen and refresh shortcuts, `php Tests/CreateTicket.php` for New Ticket shortcuts, `php Tests/TicketHistory.php` for History navigation and preview, `php Tests/BoardView.php` for board selection, paging and column checks, `php Tests/JiraData.php` for the cache and paging check, `php Tests/ListLayout.php` for the List sidebar layout check, `php Tests/FiltersLayout.php` for the filter tile layout check, `php Tests/SavedFilters.php` for saved filter modes, and `php Tests/DateFilters.php` for date filter queries.
+```sh
+mkdir -p "$HOME/.local/share" "$HOME/.local/bin"
+git clone https://github.com/madocorp/SPTK.git "$HOME/.local/share/SPTK"
+git clone https://github.com/madocorp/majira.git "$HOME/.local/share/majira"
+ln -sfn "$HOME/.local/share/SPTK" "$HOME/.local/share/majira/SPTK"
+ln -s "$HOME/.local/share/majira/majira.php" "$HOME/.local/bin/majira"
+```
+
+MaJira loads SPTK from the directory or symlink named `SPTK` beside
+`majira.php`. The clone includes a relative link for a sibling SPTK checkout;
+the command above replaces it with an absolute link. Adjust the paths if you
+install either project elsewhere. Ensure `~/.local/bin` is in your `PATH`, or
+run `majira.php` by its full path. The entry point is executable in the
+repository; restore that permission with `chmod +x majira.php` if needed.
+
+## Running
+
+```sh
+majira
+```
+
+On first use, open **Settings** with **F5**. Enter the HTTPS Jira site URL,
+email address, and API token, then press **C** to verify and save the
+connection. The token loads into a masked input on later visits; edit it to
+replace the saved token. Project choices load after connecting.
+
+Use **F1–F5** to switch between List, Filters, Board, Ticket, and Settings.
+Arrow keys move between tiles. **Return** opens or activates a selected tile;
+**Esc** usually leaves it. Press **?** on a selected tile for help. Persistent
+status messages and errors are dismissed with **Return** or **Esc**.
+
+### List and Filters
+
+**List** (**F1**) shows issue search results. Edit the JQL line to run a
+query, or press **F** to open the sidebar with saved filters and Last JQL.
+**Return** applies the highlighted sidebar filter; **Esc** closes the sidebar.
+**Return** on an issue opens its ticket. **R** refreshes the first page; **M**
+or **F6** loads more results when available.
+
+**Filters** (**F2**) provides project, board, sprint, search, date, status,
+type, priority, and assignee choices. Select **Any project** to search across
+projects. Confirming a project loads its relevant boards and choices;
+confirming a board loads its sprints. Choices are cached, including empty
+results. Builder changes save as you make them; **A** applies the filter.
+
+Saved filters appear on the left. **N** creates one, **D** deletes the selected
+one, and **Shift+Up/Down** changes their order. **C** clears the current
+filter's values, while **R** clears cached filter choices. **J** switches a
+filter to editable JQL. Create a new filter to use the builder again. Date
+filters accept independent From and To values; **Return** on an empty date
+slot opens a calendar, and **Delete** removes an active date.
+
+### Board
+
+**Board** (**F3**) has its own project, board, and sprint selectors. Choose a
+sprint to load its issue cards; **R** refreshes them. **Return** on a card opens
+the ticket. **Left/Right** moves between status columns, and **Up/Down** moves
+between cards. **PageUp/PageDown** moves through a column; **Home/End** moves
+across columns. The status bar shows the selected column among all statuses.
+
+Press **F** for the assignee filter. Choose **0** for everybody or **1–5** for
+the listed people; press **F** again for the next five, or **Esc** to close it.
+Board results are cached by board and sprint and restored at startup.
+
+### Ticket
+
+**Ticket** (**F4**) shows the title, description, comments, attachments,
+related tickets, and configured properties. **R** refreshes the ticket,
+**C** opens New Ticket, and **H** opens recent ticket history. In History,
+**Return** opens the highlighted ticket and **Esc** restores the previous one.
+
+**Return** edits the title; **Return** or **Esc** saves it. The description
+wraps by word and uses Markdown highlighting. **Ctrl+Return** saves a
+description edit; **Esc** cancels it. Comments are read-only until opened:
+press **Return** to browse, move the cursor into a comment, then press
+**Return** to edit your own comment. **Insert** adds a comment and **Delete**
+asks before removing one you own. **Ctrl+Return** saves a comment edit;
+**Esc** cancels it.
+
+**Return** on an editable property opens an editor in the same tile. Text and
+number values use an input, choices and users use a searchable list, and due
+dates use a calendar. **Return** saves; **Esc** cancels. Jira-managed Created
+and Updated fields cannot be edited. **Return** on a related issue opens it.
+
+**Return** on an attachment opens a full-window preview. Images support SPTK
+zoom and pan (**+**, **-**, arrows, and **=** to fit). Text files open read-only;
+CSV and TSV files open as tables. **Space** and **Backspace** move to the next
+and previous attachment. **Esc** or **Return** closes the preview. Unsupported
+formats, including legacy XLS, show an error.
+
+### Settings
+
+**Settings** (**F5**) has **C** to verify and save the connection, **F** to
+configure fields, **R** to clear Jira caches, and **Q** to quit. The field
+selector controls both List columns and Ticket property cards in the same
+order. Selected fields appear above available fields. **Space** adds a field
+at the end of the selected group or moves a deselected field just below it;
+**Shift+Up/Down** reorders fields within a group. **Return** saves the list,
+while **Esc** discards changes. Both return focus to the Fields button.
+Key and Summary can appear in List, but Ticket uses its existing key heading
+and title input instead of duplicate property cards.
+
+MaJira keeps settings, the API token, and cached Jira data in SPTK's private
+application data directory, normally `~/.majira`.
+
+## Tests
+
+Run the standalone checks from the MaJira checkout:
+
+```sh
+for test in Tests/*.php; do php "$test" || exit 1; done
+```
+
+## License
+
+MaJira is released under the [Unlicense](UNLICENSE).

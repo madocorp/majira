@@ -4,10 +4,11 @@ define('APP_DIR', dirname(__DIR__));
 define('APP_NAMESPACE', 'MAJIRA');
 require_once APP_DIR . '/SPTK/App.php';
 
-use MAJIRA\App\{Controller, JiraData};
+use MAJIRA\App\{Controller, JiraData, Settings};
 use SPTK\App;
 use SPTK\Core\{Style, Window};
-use SPTK\Rendering\Font;
+use SPTK\Layout\Tile;
+use SPTK\Rendering\{Font, Grid, GridWriter};
 use SPTK\SDLWrapper\{SDL, TTF};
 use SPTK\XmlParser\{ScreenParser, ScreenSelector};
 
@@ -62,9 +63,22 @@ foreach (['list' => 'List', 'filters' => 'Filters', 'board' => 'Board', 'ticket'
 }
 (new ScreenSelector())->install(array_values($screens), 'list, filters, board, ticket, settings', $style);
 $window = new Window(['title' => 'Shortcut test', 'width' => 80, 'height' => 24, 'state' => 'hidden', 'resizable' => false, 'screens' => array_values($screens)]);
+foreach ($screens as $screen) {
+  $screen->statusBar->setScheduler(static function(int $delayMs, callable $callback): void {});
+}
 $data = new class extends JiraData {
   public int $searches = 0;
   public int $ticketLoads = 0;
+  public array $connectionSettings = [];
+
+  /** Check the candidate credentials without contacting Jira. */
+  public function verifyConnection(array $settings): array {
+    $this->connectionSettings = $settings;
+    if ($settings['apiToken'] === 'bad') {
+      throw new RuntimeException('Invalid token');
+    }
+    return ['displayName' => 'Test user'];
+  }
 
   /** Count search requests without contacting Jira. */
   public function tickets(string $jql, bool $more = false): array {
@@ -86,8 +100,7 @@ try {
   shortcutCheck($window->currentScreenId() === 'settings' && $data->searches === 0, 'F5 must open Settings without searching Jira.');
   $logo = shortcutLeaf($screens['settings'], 'settings-logo')->grid();
   $site = shortcutLeaf($screens['settings'], 'jira-site')->grid();
-  $test = shortcutLeaf($screens['settings'], 'settings-test')->grid();
-  $save = shortcutLeaf($screens['settings'], 'settings-save')->grid();
+  $connect = shortcutLeaf($screens['settings'], 'settings-connect')->grid();
   $clear = shortcutLeaf($screens['settings'], 'settings-clear')->grid();
   $quit = shortcutLeaf($screens['settings'], 'settings-quit')->grid();
   shortcutCheck($logo->x === 0 && $logo->y === 2 && $logo->width > 0 && $logo->height > 0, 'Settings logo must sit in the top left layout area.');
@@ -95,14 +108,26 @@ try {
   $fittedLogo = $screens['settings']->widget('settings-logo')->destination($logoBox);
   shortcutCheck($logo->width === $screens['settings']->layout->findNode('settings-left')->grid()->width, 'Settings logo box must span the left column.');
   shortcutCheck($fittedLogo->width === $fittedLogo->height && $fittedLogo->width === min($logoBox->width, $logoBox->height) && $fittedLogo->x === intdiv($logoBox->width - $fittedLogo->width, 2) && $fittedLogo->y === intdiv($logoBox->height - $fittedLogo->height, 2), 'Settings logo must fit and remain centered within its box.');
-  shortcutCheck($site->y > $logo->y + $logo->height && $test->y > $site->y && $save->y > $test->y && $clear->y > $save->y + 1 && $quit->y > $clear->y, 'Settings controls must follow the logo and leave space before Clear and Quit.');
+  shortcutCheck($site->y > $logo->y + $logo->height && $connect->y > $site->y && $clear->y > $connect->y + 1 && $quit->y > $clear->y, 'Settings controls must follow the logo and leave space before Clear and Quit.');
   $about = shortcutLeaf($screens['settings'], 'settings-about')->grid();
   $license = shortcutLeaf($screens['settings'], 'settings-unlicense')->grid();
   $status = shortcutLeaf($screens['settings'], 'status')->grid();
   $left = $screens['settings']->layout->findNode('settings-left')->grid();
   shortcutCheck($about->x > $site->x && $about->y < $license->y && $screens['settings']->widget('settings-help') === null, 'About and Unlicense must stack without Help.');
   shortcutCheck($status->y === $left->y + $left->height + 1, 'A separator must sit above the Settings status bar.');
-  shortcutCheck(array_map(static fn($id) => $screens['settings']->widget($id)->hotkey(), ['settings-test', 'settings-save', 'settings-clear', 'settings-quit']) === ['t', 's', 'r', 'q'], 'Settings actions need T, S, R, and Q hotkeys.');
+  shortcutCheck(array_map(static fn($id) => $screens['settings']->widget($id)->hotkey(), ['settings-connect', 'settings-clear', 'settings-quit']) === ['c', 'r', 'q'], 'Settings actions need C, R, and Q hotkeys.');
+  Settings::save(['site' => 'https://example.atlassian.net', 'email' => 'test@example.com', 'apiToken' => 'saved']);
+  $screens['settings']->widget('jira-site')->setValue('https://example.atlassian.net');
+  $screens['settings']->widget('jira-email')->setValue('test@example.com');
+  $screens['settings']->widget('jira-token')->setValue('bad');
+  $tokenGrid = new Grid(12, 2);
+  $screens['settings']->widget('jira-token')->paint(new GridWriter($tokenGrid, new Tile(0, 0, 12, 2)));
+  shortcutCheck($tokenGrid->cell(0, 1)->glyph === '•' && $tokenGrid->cell(1, 1)->glyph === '•', 'The Settings token input must mask its value.');
+  $screens['settings']->widget('settings-connect')->press();
+  shortcutCheck(Settings::load()['apiToken'] === 'saved' && $data->connectionSettings['apiToken'] === 'bad', 'Connect must verify edited credentials before saving them.');
+  $screens['settings']->widget('jira-token')->setValue('saved');
+  $screens['settings']->widget('settings-connect')->press();
+  shortcutCheck(Settings::load()['apiToken'] === 'saved' && $screens['settings']->widget('jira-token')->getValue() === 'saved', 'Connect must save verified credentials and retain the masked token value.');
   $window->setCurrentScreenId('list');
   $jqlLeaf = current(array_filter($screens['list']->layout->leaves(), static fn($leaf) => $leaf->instance() === $screens['list']->widget('jql')));
   $screens['list']->activateLeaf($jqlLeaf);

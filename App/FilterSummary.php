@@ -24,6 +24,10 @@ final class FilterSummary extends Widget {
     $this->emit('change');
   }
 
+  public function title(): string {
+    return $this->title;
+  }
+
   public function setValue(string $value): void {
     if (!mb_check_encoding($value, 'UTF-8') || preg_match('/[\x00-\x1f\x7f]/', $value)) {
       throw new \InvalidArgumentException('Filter summary must be printable single-line UTF-8 text.');

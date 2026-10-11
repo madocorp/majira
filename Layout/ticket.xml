@@ -1,18 +1,22 @@
 <Screen>
   <Event type="keyDown" key="r" action="MAJIRA\App\Controller::refreshTicket" />
+  <Event type="keyDown" key="enter" action="MAJIRA\App\Controller::editSelectedComment" />
+  <Event type="keyDown" key="enter" action="MAJIRA\App\Controller::editTicketProperty" />
+  <Event type="keyDown" key="insert" action="MAJIRA\App\Controller::newComment" />
+  <Event type="keyDown" key="delete" action="MAJIRA\App\Controller::deleteSelectedComment" />
   <Layout>
     <Layout direction="horizontal" height="1*">
       <Layout id="ticket-left" width="3*">
         <Input id="ticket-summary" tip="Ticket title; Return edits and Esc or Return saves." height="1"><Event type="deactivate" action="MAJIRA\App\Controller::saveSummary" /></Input>
         <Separator />
         <Layout id="ticket-deck" height="1*">
-          <Layout id="ticket-description-card" height="1*"><TextEditor id="ticket-description" title="Description" textWrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="deactivate" action="MAJIRA\App\Controller::saveDescription" /></TextEditor></Layout>
+          <Layout id="ticket-description-card" height="1*"><TextEditor id="ticket-description" title="Description" tip="Esc cancels edits; Ctrl+Return saves." textWrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="keyDown" key="escape" action="MAJIRA\App\Controller::cancelDescription" /><Event type="deactivate" action="MAJIRA\App\Controller::saveDescription" /></TextEditor></Layout>
           <Separator />
           <Layout id="ticket-comments-card" height="1*">
-            <TextEditor id="ticket-comments" title="Comments" tip="Browse ticket comments." textWrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="deactivate" action="MAJIRA\App\Controller::restoreTicketComments" /></TextEditor>
+            <Text id="ticket-comments" title="Comments" tip="Return reads; Return again edits; Insert adds; Delete removes." wrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /></Text>
           </Layout>
           <Separator />
-          <Layout id="ticket-attachments-card" height="1*"><Table id="ticket-attachments" title="Attachments" rowCursor="true" height="1*"><Header><Field>Author</Field><Field>File</Field><Field>Size / created</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /></Table></Layout>
+          <Layout id="ticket-attachments-card" height="1*"><Table id="ticket-attachments" title="Attachments" rowCursor="true" height="1*"><Header><Field>Author</Field><Field>File</Field><Field>Size / created</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="accept" action="MAJIRA\App\Controller::openAttachmentPreview" /></Table></Layout>
           <Separator />
           <Layout id="ticket-related-card" height="1*"><Table id="ticket-related" title="Related tickets" rowCursor="true" height="1*"><Header><Field>Relation</Field><Field>Key</Field><Field>Summary</Field><Field>Status</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="accept" action="MAJIRA\App\Controller::openRelatedTicket" /></Table></Layout>
         </Layout>
@@ -21,24 +25,8 @@
       <Layout id="ticket-right" width="1*">
         <Title id="ticket-key" height="1">Ticket</Title>
         <Separator />
-        <Layout id="ticket-properties-pane" height="1*">
-          <Layout id="ticket-properties" height="auto">
-            <Layout id="ticket-property-status" height="2"><Text id="ticket-status" height="1*" /></Layout>
-            <Separator />
-            <Layout id="ticket-property-type" height="2"><Text id="ticket-type" height="1*" /></Layout>
-            <Separator />
-            <Layout id="ticket-property-priority" height="2"><Text id="ticket-priority" height="1*" /></Layout>
-            <Separator />
-            <Layout id="ticket-property-assignee" height="2"><Text id="ticket-assignee" height="1*" /></Layout>
-            <Separator />
-            <Layout id="ticket-property-reporter" height="2"><Text id="ticket-reporter" height="1*" /></Layout>
-            <Separator />
-            <Layout id="ticket-property-created" height="2"><Text id="ticket-created" height="1*" /></Layout>
-            <Separator />
-            <Layout id="ticket-property-updated" height="2"><Text id="ticket-updated" height="1*" /></Layout>
-            <Separator />
-            <Layout id="ticket-property-labels" height="2"><Text id="ticket-labels" height="1*" /></Layout>
-          </Layout>
+        <Layout id="ticket-properties-pane" height="1*" overflow="true">
+          <Layout id="ticket-properties" height="auto"></Layout>
           <Empty height="1*" />
         </Layout>
         <Separator />
