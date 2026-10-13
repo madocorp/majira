@@ -62,6 +62,10 @@ putenv('HOME=' . $testHome);
 Settings::save(['projectKey' => 'LIST', 'boardId' => '5', 'sprintId' => '50']);
 BoardState::save(['projectKey' => 'BOARD', 'boardId' => '7', 'sprintId' => '70']);
 boardCheck(BoardState::load()['sprintId'] === '70' && Settings::load()['sprintId'] === '50', 'Board selectors must stay separate from List filters.');
+BoardState::save(array_replace(BoardState::load(), ['assignee' => 'person-1']));
+boardCheck(BoardState::load()['assignee'] === 'person-1' && BoardState::load()['sprintId'] === '70', 'The Board assignee filter is kept with the selectors.');
+BoardState::save(['projectKey' => 'BOARD', 'boardId' => '7', 'sprintId' => '70']);
+boardCheck(BoardState::load()['assignee'] === '', 'A saved state without an assignee shows everybody.');
 
 $client = new class extends Client {
   public array $starts = [];
@@ -81,6 +85,13 @@ $client = new class extends Client {
       ? ['issues' => [['key' => 'BOARD-1', 'fields' => ['summary' => 'First', 'status' => ['id' => '2', 'name' => 'Ready'], 'issuetype' => ['name' => 'Task']]]], 'total' => 2]
       : ['issues' => [['key' => 'BOARD-2', 'fields' => ['summary' => 'Second', 'status' => ['id' => '3', 'name' => 'Done'], 'issuetype' => ['name' => 'Bug']]]], 'total' => 2];
   }
+  public function search(string $jql, array $fields, int $maxResults = 100, string|false $nextPageToken = false): array {
+    boardCheck($jql === 'sprint = 70 AND issuetype = Epic', 'Wrong sprint epic query.');
+    return ['issues' => [
+      ['key' => 'BOARD-2', 'fields' => ['summary' => 'Second', 'status' => ['id' => '3', 'name' => 'Done'], 'issuetype' => ['name' => 'Bug']]],
+      ['key' => 'BOARD-3', 'fields' => ['summary' => 'Epic', 'status' => ['id' => '1', 'name' => 'Open'], 'issuetype' => ['name' => 'Epic']]],
+    ], 'isLast' => true];
+  }
 };
 $data = new class($client) extends JiraData {
   public function __construct(private Client $fake) {}
@@ -88,6 +99,7 @@ $data = new class($client) extends JiraData {
 };
 $result = $data->boardSprint('7', '70');
 boardCheck($client->starts === [0, 1], 'Board sprint issues must load every page.');
+boardCheck(array_column($result['issues'], 'key') === ['BOARD-1', 'BOARD-2', 'BOARD-3'], 'Sprint epics are added once after the board issues.');
 boardCheck(BoardResultCache::has('7', '70') && $data->boardSprint('7', '70') === $result && $client->starts === [0, 1], 'A selected sprint reuses its complete cached result.');
 boardCheck($data->boardSprint('7', '70', true) === $result && $client->starts === [0, 1, 0, 1], 'Refreshing a board fetches all pages again.');
 BoardResultCache::save('7', '71', ['configuration' => [], 'issues' => []]);

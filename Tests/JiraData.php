@@ -277,7 +277,15 @@ check(TicketCache::load() === [], 'A failed new search must discard the previous
 ProjectCache::save([['key' => 'AP', 'name' => 'Project']]);
 $data->boards('AP');
 $data->sprints('101');
+$searches = $data->fake->searches;
+check($data->cachedChildren('AP-9') === null, 'Children must not be cached before the first load.');
+check(array_column($data->children('AP-9'), 'key') === ['AP-1', 'AP-2'] && $data->fake->searches === $searches + 2, 'Children must load every search page.');
+check(array_column($data->children('AP-9'), 'key') === ['AP-1', 'AP-2'] && $data->fake->searches === $searches + 2, 'Cached children must not search again.');
+$data->forgetChildren('AP-9');
+check($data->cachedChildren('AP-9') === null, 'Forgotten children must load again.');
+$data->children('AP-9');
 $data->clearCaches();
+check($data->cachedChildren('AP-9') === null, 'Children cache was not cleared.');
 check(ProjectCache::load() === [] && !BoardCache::has('AP') && !SprintCache::has('101'), 'Clearing all caches must remove filter choices.');
 check(TicketCache::load() === [], 'Ticket cache was not cleared.');
 check($data->cachedIssueTypes('AP') === [], 'Issue type cache was not cleared.');

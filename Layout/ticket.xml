@@ -18,7 +18,7 @@
           <Separator />
           <Layout id="ticket-attachments-card" height="1*"><Table id="ticket-attachments" title="Attachments" rowCursor="true" height="1*"><Header><Field>Author</Field><Field>File</Field><Field>Size / created</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="accept" action="MAJIRA\App\Controller::openAttachmentPreview" /></Table></Layout>
           <Separator />
-          <Layout id="ticket-related-card" height="1*"><Table id="ticket-related" title="Related tickets" rowCursor="true" height="1*"><Header><Field>Relation</Field><Field>Key</Field><Field>Summary</Field><Field>Status</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="accept" action="MAJIRA\App\Controller::openRelatedTicket" /></Table></Layout>
+          <Layout id="ticket-related-card" height="1*"><Table id="ticket-related" title="Related tickets" rowCursor="true" height="1*"><Header><Field>Relation</Field><Field>Key</Field><Field>Summary</Field><Field>Status</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="activate" action="MAJIRA\App\Controller::loadRelatedChildren" /><Event type="accept" action="MAJIRA\App\Controller::openRelatedTicket" /></Table></Layout>
         </Layout>
       </Layout>
       <Separator />

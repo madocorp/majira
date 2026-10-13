@@ -105,18 +105,36 @@ class JiraData {
     }
     $client = $this->client();
     $configuration = $client->boardConfiguration((int)$boardId);
+    $fields = ['summary', 'status', 'assignee', 'issuetype'];
     $issues = [];
     $start = 0;
     do {
-      $page = $client->boardSprintIssues((int)$boardId, (int)$sprintId, '', ['summary', 'status', 'assignee', 'issuetype'], 100, $start);
+      $page = $client->boardSprintIssues((int)$boardId, (int)$sprintId, '', $fields, 100, $start);
       $batch = is_array($page['issues'] ?? null) ? $page['issues'] : [];
       $issues = array_merge($issues, $batch);
       $loaded = count($batch);
       $start += $loaded;
     } while ($loaded > 0 && empty($page['isLast']) && ($start < (int)($page['total'] ?? PHP_INT_MAX)) && (isset($page['total']) || $loaded === 100));
-    $result = ['configuration' => $configuration, 'issues' => $issues];
+    $result = ['configuration' => $configuration, 'issues' => array_merge($issues, $this->sprintEpics($client, $sprintId, $fields, $issues))];
     BoardResultCache::save($boardId, $sprintId, $result);
     return $result;
+  }
+
+  /** The Agile sprint endpoint leaves out epics, but the Jira board shows them. */
+  private function sprintEpics(Client $client, string $sprintId, array $fields, array $known): array {
+    $keys = array_flip(array_column($known, 'key'));
+    $epics = [];
+    $token = false;
+    do {
+      $page = $client->search('sprint = ' . (int)$sprintId . ' AND issuetype = Epic', $fields, 100, $token);
+      foreach ($page['issues'] ?? [] as $issue) {
+        if (is_array($issue) && !isset($keys[$issue['key'] ?? ''])) {
+          $epics[] = $issue;
+        }
+      }
+      $token = (string)($page['nextPageToken'] ?? '');
+    } while ($token !== '' && empty($page['isLast']));
+    return $epics;
   }
 
   /** Load project-wide filter choices once, unless explicitly refreshed. */
@@ -238,6 +256,44 @@ class JiraData {
     return is_array($cache[$key] ?? null) ? $cache[$key] : null;
   }
 
+  /** Return cached child issues, or search every issue whose parent is this key. */
+  public function children(string $key): array {
+    $cached = $this->cachedChildren($key);
+    if ($cached !== null) {
+      return $cached;
+    }
+    $children = [];
+    $token = false;
+    do {
+      $page = $this->client()->search('parent = ' . $key . ' ORDER BY key', ['summary', 'status'], 100, $token);
+      foreach ($page['issues'] ?? [] as $issue) {
+        if (is_array($issue)) {
+          $children[] = $issue;
+        }
+      }
+      $token = (string)($page['nextPageToken'] ?? '');
+    } while ($token !== '' && empty($page['isLast']));
+    $cache = AppData::loadJson('ticket-children.json');
+    $cache[$key] = $children;
+    AppData::saveJson('ticket-children.json', $cache);
+    return $children;
+  }
+
+  /** Read child issues already on disk, or null when they were never loaded. */
+  public function cachedChildren(string $key): ?array {
+    $cache = AppData::loadJson('ticket-children.json');
+    return is_array($cache[$key] ?? null) ? $cache[$key] : null;
+  }
+
+  /** Drop the cached child issues so the next request loads them again. */
+  public function forgetChildren(string $key): void {
+    $cache = AppData::loadJson('ticket-children.json');
+    if (array_key_exists($key, $cache)) {
+      unset($cache[$key]);
+      AppData::saveJson('ticket-children.json', $cache);
+    }
+  }
+
   /** Read cached creatable issue types for a project. */
   public function cachedIssueTypes(string $projectKey): array {
     $cache = AppData::loadJson('issue-types.json');
@@ -302,6 +358,7 @@ class JiraData {
     BoardResultCache::clear();
     TicketCache::clear();
     AppData::saveJson('ticket-details.json', []);
+    AppData::saveJson('ticket-children.json', []);
     AppData::saveJson('issue-types.json', []);
   }
 }

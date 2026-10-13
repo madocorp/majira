@@ -5,6 +5,7 @@ namespace MAJIRA\App;
 use MAJIRA\Jira\Adf;
 use MAJIRA\Highlighting\MarkdownHighlighter;
 use SPTK\App;
+use SPTK\Core\AppData;
 use SPTK\Core\Window;
 use SPTK\Core\Style;
 use SPTK\Core\Widget;
@@ -24,6 +25,8 @@ use SPTK\Widgets\Title\Title;
 class Controller {
 
   private const LAST_JQL_ITEM = "\0last-jql";
+  private const SESSION_FILE = 'session.json';
+  private const RESTORED_SCREENS = ['list', 'filters', 'board', 'ticket', 'settings'];
 
   private static Window $window;
   private static JiraData $data;
@@ -137,6 +140,7 @@ class Controller {
     self::renderNavigation();
     self::renderBoardSelectors();
     $boardState = BoardState::load();
+    self::$boardAssigneeKey = (string)$boardState['assignee'];
     $cachedBoard = BoardResultCache::load((string)$boardState['boardId'], (string)$boardState['sprintId']);
     if ($cachedBoard !== null) {
       self::showBoardResult($cachedBoard, false);
@@ -158,6 +162,26 @@ class Controller {
     }
     if (Settings::isConfigured() && !empty(self::$meta['hasMore'])) {
       self::reportTicketCount();
+    }
+    self::restoreScreen();
+  }
+
+  /** Open the screen that was visible when the app was closed. */
+  private static function restoreScreen(): void {
+    $screen = (string)(AppData::loadJson(self::SESSION_FILE)['screen'] ?? '');
+    if (!in_array($screen, self::RESTORED_SCREENS, true) || ($screen === 'ticket' && self::$ticketKey === '')) {
+      return;
+    }
+    self::$window->setCurrentScreenId($screen);
+    self::$window->refreshLayout();
+  }
+
+  /** Remember the visible screen; the attachment preview reopens as its ticket. */
+  public static function saveScreen(EventContext $event): void {
+    $screen = self::$window->currentScreenId();
+    $screen = $screen === 'attachment-preview' ? 'ticket' : $screen;
+    if (in_array($screen, self::RESTORED_SCREENS, true)) {
+      AppData::saveJson(self::SESSION_FILE, ['screen' => $screen]);
     }
   }
 
@@ -493,12 +517,22 @@ class Controller {
       if ($entry['button'] !== $event->widget) {
         continue;
       }
-      self::$boardAssigneeKey = $entry['key'];
+      self::setBoardAssignee($entry['key']);
       self::closeBoardAssigneeFilter($event);
       if (self::$boardResult !== null) {
         self::showBoardResult(self::$boardResult, false);
       }
       return;
+    }
+  }
+
+  /** Change the Board assignee filter and keep it for the next app start. */
+  private static function setBoardAssignee(string $key): void {
+    self::$boardAssigneeKey = $key;
+    $state = BoardState::load();
+    if ($state['assignee'] !== $key) {
+      $state['assignee'] = $key;
+      BoardState::save($state);
     }
   }
 
@@ -526,7 +560,7 @@ class Controller {
     self::closeBoardAssigneeFilter(new EventContext('activate'));
     self::$boardResult = null;
     self::$boardAssignees = [];
-    self::$boardAssigneeKey = '';
+    self::setBoardAssignee('');
     self::$boardAssigneePage = 0;
     if (self::boardCardLocation(self::$window->screen('board')->activeLeaf()) !== null) {
       self::$window->screen('board')->release('cancel');
@@ -631,7 +665,7 @@ class Controller {
     self::$boardResult = $result;
     self::$boardAssignees = self::boardAssigneeChoices($result['issues']);
     if (self::$boardAssigneeKey !== '' && !in_array(self::$boardAssigneeKey, array_column(self::$boardAssignees, 'key'), true)) {
-      self::$boardAssigneeKey = '';
+      self::setBoardAssignee('');
     }
     $issues = self::$boardAssigneeKey === '' ? $result['issues'] : array_values(array_filter(
       $result['issues'], fn($issue): bool => is_array($issue) && self::boardIssueAssigneeKey($issue) === self::$boardAssigneeKey,
@@ -2187,6 +2221,17 @@ class Controller {
     });
   }
 
+  /** Load child issues once, when Return enters the related-ticket card. */
+  public static function loadRelatedChildren(EventContext $event): void {
+    if (self::$ticketKey === '' || self::$data->cachedChildren(self::$ticketKey) !== null) {
+      return;
+    }
+    self::request('GET children of ' . self::$ticketKey, static function(): void {
+      self::$data->children(self::$ticketKey);
+      self::renderRelatedTickets(is_array(self::$ticket['fields'] ?? null) ? self::$ticket['fields'] : []);
+    });
+  }
+
   /** Open the related issue selected in the ticket card. */
   public static function openRelatedTicket(EventContext $event): void {
     $key = self::$relatedTicketKeys[self::table('ticket', 'ticket-related')->cursorRow()] ?? '';
@@ -2243,6 +2288,7 @@ class Controller {
       self::$ticket = self::$data->ticket($key, $refresh);
       self::$ticketKey = $key;
       if ($refresh) {
+        self::$data->forgetChildren($key);
         self::refreshTicketRow();
       }
       self::renderTicket();
@@ -3138,6 +3184,9 @@ class Controller {
       if (is_array($issue)) {
         self::addRelatedTicket($rows, 'Child', $issue);
       }
+    }
+    foreach (self::$ticketKey === '' ? [] : self::$data->cachedChildren(self::$ticketKey) ?? [] as $issue) {
+      self::addRelatedTicket($rows, 'Child', $issue);
     }
     foreach ($fields['issuelinks'] ?? [] as $link) {
       if (!is_array($link)) {

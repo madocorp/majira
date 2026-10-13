@@ -10,4 +10,5 @@
     <Screen id="create" title="New ticket" file="create.xml" />
     <Screen id="attachment-preview" title="Attachment preview" file="attachment-preview.xml" />
   </Window>
+  <Event type="close" action="MAJIRA\App\Controller::saveScreen" />
 </App>
