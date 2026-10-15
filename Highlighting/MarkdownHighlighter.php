@@ -17,6 +17,7 @@ final class MarkdownHighlighter extends RuleSyntaxHighlighter {
       ['regex' => '~^\[[^\]\n]+\]\((?:https?://|mailto:)[^\s)]+\)~u', 'style' => 'link'],
       ['regex' => '~^<(?:https?://|mailto:)[^\s<>]+>~u', 'style' => 'link'],
       ['regex' => '~^<#[A-Z][A-Z0-9_]*-\d+>~u', 'style' => 'link'],
+      ['regex' => '~^<@[^<>\n]+>~u', 'style' => 'link'],
       ['regex' => '/^>\s+/u', 'style' => 'quote', 'first' => true],
     ], [
       'header' => ['fg' => '#ffffff', 'bg' => '#982461', 'fillRow' => true],

@@ -5,6 +5,7 @@ define('APP_NAMESPACE', 'MAJIRA');
 require_once APP_DIR . '/SPTK/App.php';
 
 use MAJIRA\App\{AttachmentPreview, Controller, JiraData};
+use MAJIRA\Jira\Client;
 use SPTK\App;
 use SPTK\Core\{Style, Window};
 use SPTK\Events\EventContext;
@@ -13,6 +14,25 @@ use SPTK\Rendering\Font;
 use SPTK\SDLWrapper\{SDL, TTF};
 use SPTK\Widgets\{Image\Image, Table\Table, Text\Text};
 use SPTK\XmlParser\{ScreenParser, ScreenSelector};
+
+/** Record attachment deletes for the fake data source. */
+final class AttachmentClient extends Client {
+
+  public function __construct(private JiraData $data) {
+    parent::__construct('https://example.invalid', 'test@example.invalid', 'token');
+  }
+
+  public function addAttachment(string $issueKey, string $path): array {
+    $this->data->uploaded[] = $path;
+    return [];
+  }
+
+  public function deleteAttachment(string $attachmentId): array {
+    $this->data->deleted[] = $attachmentId;
+    return [];
+  }
+
+}
 
 function previewCheck(bool $condition, string $message): void {
   if (!$condition) {
@@ -69,8 +89,20 @@ $data = new class($window, $csv, $text, APP_DIR . '/Assets/logo.png') extends Ji
   public int $downloads = 0;
   public array $screensDuringLoad = [];
   public array $loadingTexts = [];
+  public array $deleted = [];
+  public array $uploaded = [];
+  public array $remaining = [];
   public function __construct(private Window $window, private string $csv, private string $text, private string $image) {}
+  public function client(): Client {
+    return new AttachmentClient($this);
+  }
+  public function ticket(string $key, bool $refresh = false): array {
+    return ['key' => $key, 'fields' => ['attachment' => $this->remaining]];
+  }
   public function attachmentPath(array $attachment): string {
+    if ($attachment['filename'] === 'gone.txt') {
+      throw new RuntimeException('Jira download failed with HTTP 404.', 404);
+    }
     $this->downloads++;
     $this->screensDuringLoad[] = $this->window->currentScreenId();
     $this->loadingTexts[] = $this->window->screen('attachment-preview')->widget('attachment-preview-content') instanceof Text;
@@ -88,10 +120,10 @@ try {
   previewCheck(count($preview->layout->leaves()) === 1 && $preview->widget('screen_ticket') === null, 'Preview should have no selector row.');
   (new ReflectionMethod(Controller::class, 'prepareTicketTiles'))->invoke(null);
   $ticketData = ['fields' => ['attachment' => [
-    ['filename' => 'sample.csv', 'content' => 'https://example.test/1'],
-    ['filename' => 'sample.sql', 'content' => 'https://example.test/2'],
-    ['filename' => 'logo.png', 'content' => 'https://example.test/3'],
-    ['filename' => 'sheet.xls', 'content' => 'https://example.test/4'],
+    ['id' => 'a1', 'filename' => 'sample.csv', 'content' => 'https://example.test/1'],
+    ['id' => 'a2', 'filename' => 'sample.sql', 'content' => 'https://example.test/2'],
+    ['id' => 'a3', 'filename' => 'logo.png', 'content' => 'https://example.test/3'],
+    ['id' => 'a4', 'filename' => 'sheet.xls', 'content' => 'https://example.test/4'],
   ]]];
   (new ReflectionProperty(Controller::class, 'ticket'))->setValue(null, $ticketData);
   (new ReflectionMethod(Controller::class, 'renderTicket'))->invoke(null);
@@ -140,6 +172,92 @@ try {
   previewCheck($image->handleInput(previewKey(SDL::KEY_PLUS)), 'The SPTK image widget should accept zoom input.');
   $afterZoom = $image->destination(new Tile(0, 0, 100, 100));
   previewCheck($afterZoom->width > $beforeZoom->width, 'Zoom should enlarge the image.');
+  (new ReflectionProperty(Controller::class, 'ticketKey'))->setValue(null, 'AP-1');
+  $data->remaining = $ticketData['fields']['attachment'];
+  unset($data->remaining[1]);
+  $data->remaining = array_values($data->remaining);
+  $table->setCursor(1);
+  previewCheck(Controller::deleteSelectedAttachment(new EventContext('keyDown', $table)) && $ticket->statusBar->confirming(), 'Delete should ask before removing an attachment.');
+  $ticket->statusBar->handleBlockingInput(previewKey(ord('n')));
+  previewCheck($data->deleted === [] && $table->rowCount() === 4, 'Answering no should keep the attachment.');
+  Controller::deleteSelectedAttachment(new EventContext('keyDown', $table));
+  $ticket->statusBar->handleBlockingInput(previewKey(ord('y')));
+  previewCheck($data->deleted === ['a2'] && $table->rowCount() === 3, 'Answering yes should delete the selected attachment and reload the list.');
+  $uploadDir = sys_get_temp_dir() . '/majira-upload-' . bin2hex(random_bytes(4));
+  mkdir($uploadDir . '/sub', 0700, true);
+  file_put_contents($uploadDir . '/sub/notes.txt', 'x');
+  $openSelector = static function() use ($ticket, $table, $uploadDir): mixed {
+    foreach ($ticket->layout->leaves() as $leaf) {
+      if ($leaf->instance() === $table) {
+        $ticket->selectLeaf($leaf);
+        break;
+      }
+    }
+    $ticket->handleEvent(previewKey(SDL::KEY_INSERT));
+    $selector = $ticket->widget('ticket-attachment-file');
+    $selector?->setPath($uploadDir);
+    return $selector;
+  };
+  $selector = $openSelector();
+  previewCheck($selector !== null && $ticket->widget('ticket-attachments') === null, 'Insert should replace the attachment table with a file selector.');
+  $ticket->handleEvent(previewKey(SDL::KEY_ESCAPE));
+  previewCheck($data->uploaded === [] && $ticket->widget('ticket-attachments') === $table, 'Escape should restore the table without uploading.');
+  $selector = $openSelector();
+  $selector->setValue($uploadDir . '/sub');
+  $ticket->handleEvent(previewKey(SDL::KEY_RETURN));
+  previewCheck($selector->path() === $uploadDir . '/sub' && $ticket->widget('ticket-attachment-file') === $selector, 'Return on a directory should open it.');
+  $selector->setValue($uploadDir . '/sub/notes.txt');
+  $ticket->handleEvent(previewKey(SDL::KEY_RETURN));
+  previewCheck($data->uploaded === [$uploadDir . '/sub/notes.txt'] && $ticket->widget('ticket-attachments') === $table, 'Return on a file should upload it and restore the table.');
+  unlink($uploadDir . '/sub/notes.txt');
+  rmdir($uploadDir . '/sub');
+  rmdir($uploadDir);
+  $ticket->statusBar->clear();
+  $stale = ['key' => 'AP-1', 'fields' => ['attachment' => [['id' => 'a9', 'filename' => 'gone.txt', 'content' => 'https://example.test/9']]]];
+  (new ReflectionProperty(Controller::class, 'ticket'))->setValue(null, $stale);
+  (new ReflectionMethod(Controller::class, 'renderTicket'))->invoke(null);
+  $data->remaining = [];
+  $table->setCursor(0);
+  Controller::openAttachmentPreview(new EventContext('accept', $table));
+  previewCheck($window->currentScreenId() === 'ticket' && $table->rowCount() === 0, 'A deleted attachment should reload the ticket.');
+  previewCheck($ticket->statusBar->kind() === 'error' && str_contains($ticket->statusBar->text(), 'no longer exists'), 'A deleted attachment should explain the reload.');
+  $ticket->statusBar->clear();
+  $paragraph = static fn(string $text): array => ['type' => 'paragraph', 'content' => [['type' => 'text', 'text' => $text]]];
+  $linked = $ticketData;
+  $linked['key'] = 'AP-1';
+  $linked['fields']['description'] = ['type' => 'doc', 'content' => [$paragraph('Intro'), $paragraph('<@sample.sql>')]];
+  $linked['fields']['comment'] = ['comments' => [['id' => 'c1', 'author' => ['displayName' => 'Ada'], 'created' => '2026-10-15T10:00:00.000+0200', 'body' => ['type' => 'doc', 'content' => [$paragraph('<@logo.png>')]]]]];
+  (new ReflectionProperty(Controller::class, 'ticket'))->setValue(null, $linked);
+  (new ReflectionMethod(Controller::class, 'renderTicket'))->invoke(null);
+  $activate = static function(mixed $widget) use ($ticket): void {
+    foreach ($ticket->layout->leaves() as $leaf) {
+      if ($leaf->instance() === $widget) {
+        $ticket->activateLeaf($leaf);
+        return;
+      }
+    }
+  };
+  Controller::expandTicketCard(new EventContext('select', (new ReflectionProperty(Controller::class, 'ticketCardSummaries'))->getValue()['comments']));
+  $viewer = $ticket->widget('ticket-comments');
+  $activate($viewer);
+  $ticket->handleEvent(previewKey(ord('l')));
+  previewCheck($window->currentScreenId() === 'ticket' && $ticket->statusBar->kind() === 'error', 'L on a comment line without a token should explain itself.');
+  $ticket->statusBar->clear();
+  $ticket->handleEvent(previewKey(SDL::KEY_DOWN));
+  $ticket->handleEvent(previewKey(SDL::KEY_DOWN));
+  $ticket->handleEvent(previewKey(ord('l')));
+  previewCheck($window->currentScreenId() === 'attachment-preview' && $preview->activeLeaf()?->instance() instanceof Image, 'L on a comment token line should preview that attachment.');
+  $preview->handleEvent(previewKey(SDL::KEY_ESCAPE));
+  Controller::expandTicketCard(new EventContext('select', (new ReflectionProperty(Controller::class, 'ticketCardSummaries'))->getValue()['description']));
+  $description = $ticket->widget('ticket-description');
+  $activate($description);
+  $ticket->handleEvent(previewKey(SDL::KEY_DOWN));
+  $ticket->handleEvent(previewKey(SDL::KEY_DOWN));
+  $ticket->handleEvent(previewKey(ord('l')));
+  previewCheck($window->currentScreenId() === 'ticket', 'Plain L in the description should stay text input.');
+  $ticket->handleEvent((object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => ord('l'), 'mod' => SDL::MOD_CTRL, 'repeat' => false]]);
+  previewCheck($window->currentScreenId() === 'attachment-preview' && $preview->activeLeaf()?->instance() instanceof Text, 'Ctrl+L on a description token line should preview that attachment.');
+  $preview->handleEvent(previewKey(SDL::KEY_ESCAPE));
   echo "Attachment preview checks passed.\n";
 } finally {
   $window->close();

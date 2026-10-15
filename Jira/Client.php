@@ -189,6 +189,65 @@ class Client {
     return $this->request('DELETE', '/rest/api/3/attachment/' . rawurlencode($attachmentId));
   }
 
+  /** Uploads a local file as an issue attachment. */
+  public function addAttachment(string $issueKey, string $path): array {
+    if (!function_exists('curl_init')) {
+      throw new \RuntimeException('The PHP curl extension is required for Jira communication.');
+    }
+    if (!is_file($path) || !is_readable($path)) {
+      throw new \RuntimeException("Cannot read file: {$path}");
+    }
+    $handle = curl_init();
+    curl_setopt_array($handle, [
+      CURLOPT_URL => $this->site . '/rest/api/3/issue/' . rawurlencode($issueKey) . '/attachments',
+      CURLOPT_RETURNTRANSFER => true,
+      CURLOPT_POST => true,
+      CURLOPT_POSTFIELDS => ['file' => new \CURLFile($path, mime_content_type($path) ?: 'application/octet-stream', basename($path))],
+      CURLOPT_USERPWD => "{$this->email}:{$this->apiToken}",
+      CURLOPT_TIMEOUT => 120,
+      CURLOPT_HTTPHEADER => ['Accept: application/json', 'X-Atlassian-Token: no-check'],
+    ]);
+    $body = curl_exec($handle);
+    $error = curl_error($handle);
+    $status = curl_getinfo($handle, CURLINFO_HTTP_CODE);
+    curl_close($handle);
+    if ($body === false) {
+      throw new \RuntimeException("Jira upload failed: {$error}");
+    }
+    $data = json_decode($body, true);
+    if ($status >= 400) {
+      throw new \RuntimeException("Jira API error {$status}: " . (is_array($data) ? self::errorMessage($data) : $body));
+    }
+    return is_array($data) ? $data : [];
+  }
+
+  /** Returns the Media Services id that comments use for an attachment, read from its download redirect. */
+  public function attachmentMediaId(string $attachmentId): string {
+    if (!function_exists('curl_init')) {
+      throw new \RuntimeException('The PHP curl extension is required for Jira communication.');
+    }
+    $handle = curl_init();
+    curl_setopt_array($handle, [
+      CURLOPT_URL => $this->site . '/rest/api/3/attachment/content/' . rawurlencode($attachmentId),
+      CURLOPT_RETURNTRANSFER => true,
+      CURLOPT_FOLLOWLOCATION => false,
+      CURLOPT_USERPWD => "{$this->email}:{$this->apiToken}",
+      CURLOPT_TIMEOUT => 20,
+    ]);
+    $body = curl_exec($handle);
+    $error = curl_error($handle);
+    $status = curl_getinfo($handle, CURLINFO_HTTP_CODE);
+    $location = (string)curl_getinfo($handle, CURLINFO_REDIRECT_URL);
+    curl_close($handle);
+    if ($body === false) {
+      throw new \RuntimeException("Jira request failed: {$error}");
+    }
+    if (preg_match('~/file/([0-9a-f-]{36})/~', $location, $match) !== 1) {
+      throw new \RuntimeException("Jira did not return a media id for attachment {$attachmentId} (HTTP {$status}).");
+    }
+    return $match[1];
+  }
+
   /** Downloads an attachment content URL to a local file path. */
   public function download(string $url, string $path): void {
     if (!function_exists('curl_init')) {
@@ -227,7 +286,7 @@ class Client {
     fclose($file);
     if ($ok === false || $status >= 400) {
       @unlink($temp);
-      throw new \RuntimeException($ok === false ? "Jira download failed: {$error}" : "Jira download failed with HTTP {$status}.");
+      throw new \RuntimeException($ok === false ? "Jira download failed: {$error}" : "Jira download failed with HTTP {$status}.", $ok === false ? 0 : $status);
     }
     if (!rename($temp, $path)) {
       @unlink($temp);

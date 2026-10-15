@@ -5,20 +5,25 @@
   <Event type="keyDown" key="enter" action="MAJIRA\App\Controller::editTicketKey" />
   <Event type="keyDown" key="ctrl+c" action="MAJIRA\App\Controller::copyTicketUrl" />
   <Event type="keyDown" key="insert" action="MAJIRA\App\Controller::newComment" />
+  <Event type="keyDown" key="insert" action="MAJIRA\App\Controller::newAttachment" />
+  <Event type="keyDown" key="l" action="MAJIRA\App\Controller::openCommentAttachment" />
+  <Event type="keyDown" key="ctrl+l" action="MAJIRA\App\Controller::openCommentAttachment" />
+  <Event type="keyDown" key="ctrl+l" action="MAJIRA\App\Controller::openDescriptionAttachment" />
   <Event type="keyDown" key="delete" action="MAJIRA\App\Controller::deleteSelectedComment" />
+  <Event type="keyDown" key="delete" action="MAJIRA\App\Controller::deleteSelectedAttachment" />
   <Layout>
     <Layout direction="horizontal" height="1*">
       <Layout id="ticket-left" width="3*">
         <Input id="ticket-summary" tip="Ticket title; Return edits and Esc or Return saves." height="1"><Event type="deactivate" action="MAJIRA\App\Controller::saveSummary" /></Input>
         <Separator />
         <Layout id="ticket-deck" height="1*">
-          <Layout id="ticket-description-card" height="1*"><TextEditor id="ticket-description" title="Description" tip="Esc cancels edits; Ctrl+Return saves." textWrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="keyDown" key="escape" action="MAJIRA\App\Controller::cancelDescription" /><Event type="deactivate" action="MAJIRA\App\Controller::saveDescription" /></TextEditor></Layout>
+          <Layout id="ticket-description-card" height="1*"><TextEditor id="ticket-description" title="Description" tip="Esc cancels edits; Ctrl+Return saves; Ctrl+L opens a linked attachment." textWrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="keyDown" key="escape" action="MAJIRA\App\Controller::cancelDescription" /><Event type="deactivate" action="MAJIRA\App\Controller::saveDescription" /></TextEditor></Layout>
           <Separator />
           <Layout id="ticket-comments-card" height="1*">
-            <Text id="ticket-comments" title="Comments" tip="Return reads; Return again edits; Insert adds; Delete removes." wrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /></Text>
+            <Text id="ticket-comments" title="Comments" tip="Return reads; Return again edits; L opens a linked attachment; Insert adds; Delete removes." wrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /></Text>
           </Layout>
           <Separator />
-          <Layout id="ticket-attachments-card" height="1*"><Table id="ticket-attachments" title="Attachments" rowCursor="true" height="1*"><Header><Field>Author</Field><Field>File</Field><Field>Size / created</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="accept" action="MAJIRA\App\Controller::openAttachmentPreview" /></Table></Layout>
+          <Layout id="ticket-attachments-card" height="1*"><Table id="ticket-attachments" title="Attachments" tip="Return previews; Insert adds; Delete removes." rowCursor="true" height="1*"><Header><Field>Author</Field><Field>File</Field><Field>Size / created</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="accept" action="MAJIRA\App\Controller::openAttachmentPreview" /></Table></Layout>
           <Separator />
           <Layout id="ticket-related-card" height="1*"><Table id="ticket-related" title="Related tickets" rowCursor="true" height="1*"><Header><Field>Relation</Field><Field>Key</Field><Field>Summary</Field><Field>Status</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="activate" action="MAJIRA\App\Controller::loadRelatedChildren" /><Event type="accept" action="MAJIRA\App\Controller::openRelatedTicket" /></Table></Layout>
         </Layout>

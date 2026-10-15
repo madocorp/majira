@@ -252,6 +252,12 @@ class Adf {
         return $url === '' ? '' : '<' . $url . '>';
       case 'status':
         return (string)($node['attrs']['text'] ?? '');
+      case 'mediaSingle':
+      case 'mediaGroup':
+        return self::renderChildren($node);
+      case 'media':
+        // The app replaces known Media Services ids with attachment names.
+        return '<@' . (string)($node['attrs']['id'] ?? '?') . ">\n\n";
       default:
         return self::renderChildren($node);
     }

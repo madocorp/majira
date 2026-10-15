@@ -14,6 +14,7 @@ use SPTK\Events\EventContext;
 use SPTK\Events\EventDefinition;
 use SPTK\Layout\{LayoutLeaf, LayoutNode, LayoutSeparator};
 use SPTK\Widgets\DateSelector\DateSelector;
+use SPTK\Widgets\FileSelector\FileSelector;
 use SPTK\Widgets\Button\Button;
 use SPTK\Widgets\Input\Input;
 use SPTK\Widgets\List\ListView;
@@ -67,9 +68,14 @@ class Controller {
   private static ?string $commentEditingId = null;
   private static string $commentOriginalBody = '';
   private static bool $commentSaveRequested = false;
+  private static array $commentSaveDocument = [];
   private static ?string $commentCurrentAccountId = null;
   private static ?LayoutLeaf $attachmentPreviewLeaf = null;
   private static ?int $attachmentPreviewRow = null;
+  private static ?LayoutLeaf $attachmentTableLeaf = null;
+  private static ?LayoutLeaf $attachmentSelectorLeaf = null;
+  private static ?FileSelector $attachmentSelector = null;
+  private static ?string $attachmentUploadPath = null;
   private const TICKET_CARDS = ['description' => 'Description', 'comments' => 'Comments', 'attachments' => 'Attachments', 'related' => 'Related tickets'];
   private static array $ticketCardSummaries = [];
   private static array $ticketCardWidgets = [];
@@ -1814,14 +1820,20 @@ class Controller {
   /** Save the description field. */
   public static function saveDescription(EventContext $event): void {
     $description = self::editor('ticket', 'ticket-description')->getValue();
-    if (self::$ticketKey !== '' && $description !== Adf::toText(self::$ticket['fields']['description'] ?? null)) {
-      self::writeTicket(['description' => Adf::fromMarkdown($description)], 'PUT description');
+    if (self::$ticketKey === '' || $description === self::media()->toText(self::$ticket['fields']['description'] ?? null)) {
+      return;
+    }
+    $document = null;
+    if (self::request('Check attachments in description', static function() use ($description, &$document): void {
+      $document = self::media()->fromMarkdown($description);
+    })) {
+      self::writeTicket(['description' => $document], 'PUT description');
     }
   }
 
   /** Discard description edits before Escape releases the editor. */
   public static function cancelDescription(EventContext $event): void {
-    self::editor('ticket', 'ticket-description')->setValue(Adf::toText(self::$ticket['fields']['description'] ?? null));
+    self::editor('ticket', 'ticket-description')->setValue(self::media()->toText(self::$ticket['fields']['description'] ?? null));
   }
 
   /** Open an editor in the selected property tile when Jira permits the field. */
@@ -2106,7 +2118,7 @@ class Controller {
     if (!self::canModifyComment($comment)) {
       return true;
     }
-    self::openCommentEditor((string)$comment['id'], Adf::toText($comment['body'] ?? null));
+    self::openCommentEditor((string)$comment['id'], self::media()->toText($comment['body'] ?? null));
     return true;
   }
 
@@ -2146,10 +2158,136 @@ class Controller {
     return true;
   }
 
+  /** Ask before deleting the attachment under the table cursor; Jira checks the permission. */
+  public static function deleteSelectedAttachment(EventContext $event): bool {
+    if (!$event->widget instanceof Table || $event->widget->id() !== 'ticket-attachments' || self::$ticketKey === '') {
+      return false;
+    }
+    $attachment = self::$ticketAttachments[$event->widget->cursorRow()] ?? null;
+    if ($attachment === null) {
+      return true;
+    }
+    $id = (string)($attachment['id'] ?? '');
+    $key = self::$ticketKey;
+    $name = (string)($attachment['filename'] ?? 'attachment');
+    self::$window->screen('ticket')->statusBar->confirm('Delete attachment ' . $name . '?', static function() use ($key, $id, $name): void {
+      if (self::$ticketKey !== $key) {
+        return;
+      }
+      self::request('DELETE attachment ' . $name, static function() use ($key, $id): void {
+        self::$data->client()->deleteAttachment($id);
+        self::$ticket = self::$data->ticket($key, true);
+        self::renderTicket();
+      });
+    }, static fn(): bool => false);
+    return true;
+  }
+
+  /** Replace the attachment table with a file browser for a new upload. */
+  public static function newAttachment(EventContext $event): bool {
+    if (!$event->widget instanceof Table || $event->widget->id() !== 'ticket-attachments' || self::$ticketKey === '') {
+      return false;
+    }
+    $screen = self::$window->screen('ticket');
+    $card = $screen->layout->findNode('ticket-attachments-card');
+    self::$attachmentTableLeaf = $card->leaves()[0];
+    if (self::$attachmentSelector === null) {
+      self::$attachmentSelector = new FileSelector((string)(getenv('HOME') ?: '.'));
+      self::$attachmentSelector->setId('ticket-attachment-file');
+      self::$attachmentSelector->setTips('Return opens a directory or uploads a file; Esc cancels.');
+      self::$attachmentSelectorLeaf = new LayoutLeaf('FileSelector', '1*', '1*', self::$attachmentSelector, [
+        new EventDefinition('keyDown', 'enter', self::class . '::acceptAttachmentFile'),
+        new EventDefinition('deactivate', null, self::class . '::finishAttachmentSelect'),
+      ]);
+    } else {
+      self::$attachmentSelector->reload();
+    }
+    self::$attachmentUploadPath = null;
+    $screen->release();
+    $card->replaceChild(self::$attachmentTableLeaf, self::$attachmentSelectorLeaf);
+    $screen->setLayout($screen->layout);
+    $screen->activateLeaf(self::$attachmentSelectorLeaf);
+    self::$window->refreshLayout();
+    return true;
+  }
+
+  /** Mark a file for upload; directories are left to the browser. */
+  public static function acceptAttachmentFile(EventContext $event): bool {
+    $path = self::$attachmentSelector?->activeValue();
+    if ($path === null || !is_file($path)) {
+      return false;
+    }
+    self::$attachmentUploadPath = $path;
+    self::$window->screen('ticket')->release();
+    return true;
+  }
+
+  /** Restore the attachment table and upload the chosen file, if any. */
+  public static function finishAttachmentSelect(EventContext $event): void {
+    if (self::$attachmentTableLeaf === null) {
+      return;
+    }
+    $screen = self::$window->screen('ticket');
+    $screen->layout->findNode('ticket-attachments-card')->replaceChild(self::$attachmentSelectorLeaf, self::$attachmentTableLeaf);
+    $screen->setLayout($screen->layout);
+    $screen->selectLeaf(self::$attachmentTableLeaf);
+    self::$attachmentTableLeaf = null;
+    self::$window->refreshLayout();
+    $path = self::$attachmentUploadPath;
+    self::$attachmentUploadPath = null;
+    if ($path === null) {
+      return;
+    }
+    $key = self::$ticketKey;
+    self::request('Upload ' . basename($path) . ' to ' . $key, static function() use ($key, $path): void {
+      self::$data->client()->addAttachment($key, $path);
+      self::$ticket = self::$data->ticket($key, true);
+      self::renderTicket();
+    });
+  }
+
+  /** Preview the attachment on the comment line under the read cursor. */
+  public static function openCommentAttachment(EventContext $event): bool {
+    if (!self::commentViewerSelected($event) || self::$window->screen('ticket')->activeLeaf()?->instance() !== $event->widget) {
+      return false;
+    }
+    [$row] = $event->widget->cursorPosition();
+    self::openLinkedAttachment(explode("\n", $event->widget->text())[$row] ?? '');
+    return true;
+  }
+
+  /** Preview the attachment on the description line under the cursor. */
+  public static function openDescriptionAttachment(EventContext $event): bool {
+    if (!$event->widget instanceof TextEditor || $event->widget->id() !== 'ticket-description' || self::$ticketKey === '') {
+      return false;
+    }
+    [$row] = $event->widget->cursorPosition();
+    self::openLinkedAttachment(explode("\n", $event->widget->getValue())[$row] ?? '');
+    return true;
+  }
+
+  /** Open the preview for a line's attachment token, or explain why not. */
+  private static function openLinkedAttachment(string $line): void {
+    $attachment = self::media()->linked($line);
+    $ids = array_map(static fn(array $item): string => (string)($item['id'] ?? ''), self::$ticketAttachments);
+    $row = $attachment === null ? false : array_search((string)$attachment['id'], $ids, true);
+    if ($row === false) {
+      self::status('No attachment on this line.', true);
+      return;
+    }
+    self::showAttachmentPreview($row);
+  }
+
   /** Mark Ctrl+Return as a save and keep empty drafts open. */
   public static function requestCommentSave(EventContext $event): bool {
-    if (trim(self::$commentEditor?->getValue() ?? '') === '') {
+    $body = self::$commentEditor?->getValue() ?? '';
+    if (trim($body) === '') {
       self::status('Comment cannot be empty.', true);
+      return true;
+    }
+    if (!self::request('Check attachments in comment', static function() use ($body): void {
+      self::$commentSaveDocument = self::media()->fromMarkdown($body);
+    })) {
       return true;
     }
     self::$commentSaveRequested = true;
@@ -2176,11 +2314,12 @@ class Controller {
       return;
     }
     $key = self::$ticketKey;
-    self::writeComment($id === '' ? 'POST comment' : 'PUT comment', static function() use ($key, $id, $body): void {
+    $document = self::$commentSaveDocument;
+    self::writeComment($id === '' ? 'POST comment' : 'PUT comment', static function() use ($key, $id, $document): void {
       if ($id === '') {
-        self::$data->client()->addComment($key, Adf::fromMarkdown($body));
+        self::$data->client()->addComment($key, $document);
       } else {
-        self::$data->client()->updateComment($key, $id, Adf::fromMarkdown($body));
+        self::$data->client()->updateComment($key, $id, $document);
       }
     });
   }
@@ -3044,6 +3183,7 @@ class Controller {
     $screen->setLayout($screen->layout);
     $screen->selectLeaf(self::$ticketExpanded[$key]->leaves()[0]);
     self::$window->refreshLayout();
+    self::resolveTicketMedia();
   }
 
   /** Open Description when a ticket loads, regardless of the previous card. */
@@ -3057,6 +3197,7 @@ class Controller {
     $deck->replaceChild(self::$ticketCompact['description'], self::$ticketExpanded['description']);
     self::$activeTicketCard = 'description';
     $screen->setLayout($screen->layout);
+    self::resolveTicketMedia();
   }
 
   /** Replace the property cards with the most recently opened tickets. */
@@ -3152,7 +3293,7 @@ class Controller {
     if (self::$ticketCardSummaries === []) {
       return;
     }
-    $description = trim(Adf::toText($fields['description'] ?? null));
+    $description = trim(self::media()->toText($fields['description'] ?? null));
     $lines = $description === '' ? 0 : substr_count($description, "\n") + 1;
     self::$ticketCardSummaries['description']->setValue($lines === 0 ? 'No description' : self::plural($lines, 'line'));
     $comments = array_filter($fields['comment']['comments'] ?? [], 'is_array');
@@ -3174,6 +3315,33 @@ class Controller {
     return $count . ' ' . $noun . ($count === 1 ? '' : 's');
   }
 
+  /** Attachment token conversion for the current ticket. */
+  private static function media(): TicketMedia {
+    return new TicketMedia(self::$ticket, self::$data);
+  }
+
+  /** Name embedded files in the open Description or Comments card; unknown ids cost one lookup per attachment. */
+  private static function resolveTicketMedia(): void {
+    if (self::$ticketKey === '' || !in_array(self::$activeTicketCard, ['description', 'comments'], true)) {
+      return;
+    }
+    $fields = is_array(self::$ticket['fields'] ?? null) ? self::$ticket['fields'] : [];
+    $media = self::media();
+    $text = $media->toText($fields['description'] ?? null);
+    if (self::$activeTicketCard === 'comments') {
+      $text = '';
+      foreach ((array)($fields['comment']['comments'] ?? []) as $comment) {
+        $text .= $media->toText($comment['body'] ?? null) . "\n";
+      }
+    }
+    if (!$media->needsLookup($text)) {
+      return;
+    }
+    if (self::request('GET attachment media ids for ' . self::$ticketKey, static fn() => $media->resolve($text))) {
+      self::renderTicket();
+    }
+  }
+
   /** Join the first three items and mark that more exist. */
   private static function firstThree(array $items): string {
     return implode(', ', array_slice($items, 0, 3)) . (count($items) > 3 ? ', …' : '');
@@ -3184,7 +3352,7 @@ class Controller {
     $fields = is_array(self::$ticket['fields'] ?? null) ? self::$ticket['fields'] : [];
     self::ticketKeyLeaf()->instance()->setText(self::$ticketKey === '' ? 'Ticket' : self::$ticketKey);
     self::input('ticket', 'ticket-summary')->setValue((string)($fields['summary'] ?? ''));
-    self::editor('ticket', 'ticket-description')->setValue(Adf::toText($fields['description'] ?? null));
+    self::editor('ticket', 'ticket-description')->setValue(self::media()->toText($fields['description'] ?? null));
     self::text('ticket', 'ticket-comments')->setText(self::$ticketKey === '' ? '' : self::ticketCommentsText());
     $attachments = [];
     self::$ticketAttachments = [];
@@ -3202,6 +3370,7 @@ class Controller {
       $value = trim(preg_replace('/\s+/u', ' ', $value) ?? '');
       $summary->setValue($value !== '' ? $value : '-');
     }
+    self::resolveTicketMedia();
   }
 
   /** Let the preview body occupy the entire window, without selector buttons. */
@@ -3261,6 +3430,10 @@ class Controller {
       $widget = AttachmentPreview::widget($kind, self::$data->attachmentPath($attachment), $name);
     } catch (\Throwable $error) {
       self::$window->setCurrentScreenId('ticket');
+      if ($error->getCode() === 404) {
+        self::reloadStaleTicket($name);
+        return;
+      }
       self::status('Load attachment ' . $name . ' failed: ' . $error->getMessage(), true);
       self::$window->refreshLayout();
       return;
@@ -3269,6 +3442,17 @@ class Controller {
     self::$attachmentPreviewRow = $row;
     self::$window->screen('attachment-preview')->activateLeaf(self::$attachmentPreviewLeaf);
     self::$window->refreshLayout();
+  }
+
+  /** Reload a cached ticket whose attachment was deleted in Jira. */
+  private static function reloadStaleTicket(string $name): void {
+    $key = self::$ticketKey;
+    if (self::request('GET ' . $key, static function() use ($key): void {
+      self::$ticket = self::$data->ticket($key, true);
+      self::renderTicket();
+    })) {
+      self::status($name . ' no longer exists in Jira; the ticket was reloaded.', true);
+    }
   }
 
   /** Swap the content of the full-window preview without changing screens. */
@@ -3317,7 +3501,7 @@ class Controller {
       }
       $lines[] = ">>> {$author} [{$date}]";
       $lines[] = '';
-      foreach (explode("\n", Adf::toText($comment['body'] ?? null)) as $line) {
+      foreach (explode("\n", self::media()->toText($comment['body'] ?? null)) as $line) {
         $lines[] = $line;
       }
       self::$ticketCommentRanges[] = [$start, count($lines), $comment];

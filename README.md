@@ -107,6 +107,14 @@ press **Return** to browse, move the cursor into a comment, then press
 asks before removing one you own. **Ctrl+Return** saves a comment edit;
 **Esc** cancels it.
 
+Embedded attachments show as `<@file.txt>` lines in comments and the
+description. To embed one, write `<@1>` (its row in the attachment table) or
+`<@file.txt>` on its own line; images show as images, other files as cards.
+In the comment reader, **L** or **Ctrl+L** previews the attachment on the
+cursor's line; in the description, use **Ctrl+L**.
+When a file has no known name yet, opening Description or Comments asks Jira
+for attachment ids once and caches them.
+
 **Return** on an editable property opens an editor in the same tile. Text,
 number, and issue-key values (Parent, Epic Link, Parent Link) use an input;
 an empty key removes the link. Choices and users use a searchable list, and due
@@ -117,7 +125,10 @@ screen board when it belongs to the ticket's project, then the List board, then
 the project's first board. Jira-managed Created and Updated fields cannot be
 edited. **Return** on a related issue opens it.
 
-**Return** on an attachment opens a full-window preview. Images support SPTK
+**Insert** on the attachment table replaces it with a file browser: **Return**
+opens a directory or uploads the file, **Esc** restores the table. **Delete**
+on an attachment asks before removing it; Jira decides whether you may delete
+it. **Return** on an attachment opens a full-window preview. Images support SPTK
 zoom and pan (**+**, **-**, arrows, and **=** to fit). Text files open read-only;
 CSV and TSV files open as tables. **Space** and **Backspace** move to the next
 and previous attachment. **Esc** or **Return** closes the preview. Unsupported
