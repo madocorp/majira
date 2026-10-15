@@ -63,6 +63,14 @@ $header->paint(new GridWriter($headerGrid, new Tile(0, 0, 16, 5)));
 highlightCheck($headerGrid->cell(15, 0)->bg == Color::from('#982461')
   && $headerGrid->cell(15, 1)->bg == Color::from('#982461'), 'Wrapped comment headers should fill each visible tile row.');
 highlightCheck($headerGrid->cell(15, 3)->bg == (new Style())->background, 'Header fill should stop before the comment body.');
+$code = new TextEditor("```\nSELECT *\n\n```\nafter", new Style(), false);
+$code->setHighlighter($markdown);
+$codeGrid = new Grid(20, 5);
+$code->paint(new GridWriter($codeGrid, new Tile(0, 0, 20, 5)));
+$codeBackground = Color::from('#b7d7e8');
+highlightCheck($codeGrid->cell(19, 0)->bg == $codeBackground && $codeGrid->cell(19, 1)->bg == $codeBackground
+  && $codeGrid->cell(19, 2)->bg == $codeBackground && $codeGrid->cell(19, 3)->bg == $codeBackground, 'A code block, including empty lines, should fill to the tile edge.');
+highlightCheck($codeGrid->cell(19, 4)->bg == (new Style())->background, 'Code fill should stop after the closing fence.');
 $editor->setValue('plain text');
 $grid->clear();
 $editor->paint(new GridWriter($grid, new Tile(0, 0, 32, 4)));
@@ -84,4 +92,10 @@ highlightCheck($wrappedGrid->cell(0, 1)->glyph === '*' && $wrappedGrid->cell(0, 
 $wrapped->emit('activate');
 $wrapped->handleInput((object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_DOWN, 'mod' => 0]]);
 highlightCheck($wrapped->cursorPosition() === [0, 2], 'Down should move the caret to the next wrapped word.');
+$links = (new MarkdownHighlighter())->highlight(['See <https://a.io/x> or [docs](https://b.io) not https://c.io'])[0];
+highlightCheck(highlightStyle($links, 4) === 'link' && highlightStyle($links, 19) === 'link', 'An <url> autolink should use the link color.');
+highlightCheck(highlightStyle($links, 24) === 'link' && highlightStyle($links, 43) === 'link', 'A [text](url) link should use the link color.');
+highlightCheck(highlightStyle($links, 49) === 'plain', 'A bare URL is plain Markdown text.');
+$ticketLink = (new MarkdownHighlighter())->highlight(['See <#AP-1234> now'])[0];
+highlightCheck(highlightStyle($ticketLink, 4) === 'link' && highlightStyle($ticketLink, 13) === 'link' && highlightStyle($ticketLink, 15) === 'plain', 'A <#KEY> ticket link should use the link color.');
 echo "Markdown highlighting checks passed.\n";

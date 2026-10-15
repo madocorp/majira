@@ -13,7 +13,24 @@ final class BoardTicketCard extends Widget {
 
   public const HEIGHT = 4;
 
-  public function __construct(private readonly string $key, private readonly string $summary, private readonly string $assignee, private readonly string $type = '', private readonly Style $style = new Style()) {
+  /** Priority marks from highest to lowest; LiberationMono draws each in one cell. */
+  private const PRIORITY_MARKS = [
+    'show-stopper' => '‼', 'blocker' => '‼', 'highest' => '‼',
+    'critical' => '▲', 'urgent' => '▲',
+    'high' => '↑', 'major' => '↑',
+    'medium' => '=', 'normal' => '=', 'standart' => '=',
+    'low' => '↓', 'minor' => '↓',
+    'lowest' => '▼', 'trivial' => '▼',
+  ];
+
+  public function __construct(private readonly string $key, private readonly string $summary, private readonly string $assignee, private readonly string $type = '', private readonly string $badge = '', private readonly Style $style = new Style()) {
+  }
+
+  /** Build the story point and priority mark shown beside the assignee, e.g. "2=". */
+  public static function badge(mixed $points, string $priority): string {
+    $estimate = is_numeric($points) ? rtrim(rtrim(number_format((float)$points, 2, '.', ''), '0'), '.') : '';
+    $mark = $priority === '' ? '' : (self::PRIORITY_MARKS[mb_strtolower(trim($priority))] ?? '?');
+    return $estimate . $mark;
   }
 
   public function key(): string {
@@ -24,7 +41,7 @@ final class BoardTicketCard extends Widget {
     return $this->style->background;
   }
 
-  /** Paint the key and type, two wrapped summary rows, and assignee name. */
+  /** Paint the key and type, two wrapped summary rows, and assignee with the badge. */
   public function paint(GridWriter $writer): void {
     $background = $this->background();
     $writer->fill($this->style->foreground, $background);
@@ -51,7 +68,18 @@ final class BoardTicketCard extends Widget {
       }
     }
     if ($writer->height() > 3) {
-      $writer->write(1, 3, $this->assignee !== '' ? $this->assignee : 'Unassigned', $this->style->selected, $background);
+      $assignee = $this->assignee !== '' ? $this->assignee : 'Unassigned';
+      $badgeWidth = TextMetrics::width($this->badge);
+      $space = $badgeWidth === 0 ? $width : $width - $badgeWidth - 1;
+      if ($space >= 1 && TextMetrics::width($assignee) > $space) {
+        $assignee = TextMetrics::slice($assignee, 0, TextMetrics::index($assignee, $space - 1)) . '…';
+      }
+      if ($space >= 1) {
+        $writer->write(1, 3, $assignee, $this->style->selected, $background);
+      }
+      if ($badgeWidth > 0 && $badgeWidth <= $width) {
+        $writer->write($writer->width() - 1 - $badgeWidth, 3, $this->badge, $this->style->highlight, $background);
+      }
     }
   }
 

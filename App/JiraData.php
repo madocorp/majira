@@ -105,7 +105,11 @@ class JiraData {
     }
     $client = $this->client();
     $configuration = $client->boardConfiguration((int)$boardId);
-    $fields = ['summary', 'status', 'assignee', 'issuetype'];
+    $fields = ['summary', 'status', 'assignee', 'issuetype', 'priority'];
+    $estimate = (string)($configuration['estimation']['field']['fieldId'] ?? '');
+    if ($estimate !== '') {
+      $fields[] = $estimate;
+    }
     $issues = [];
     $start = 0;
     do {

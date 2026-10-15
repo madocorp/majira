@@ -8,6 +8,7 @@ use MAJIRA\App\{Controller, JiraData};
 use MAJIRA\Jira\{Adf, Client};
 use SPTK\App;
 use SPTK\Core\{Style, Window};
+use SPTK\Events\EventContext;
 use SPTK\Rendering\Font;
 use SPTK\SDLWrapper\{SDL, TTF};
 use SPTK\Widgets\Text\Text;
@@ -111,6 +112,9 @@ try {
   (new ReflectionProperty(Controller::class, 'ticketKey'))->setValue(null, 'AP-1');
   (new ReflectionMethod(Controller::class, 'prepareTicketTiles'))->invoke(null);
   (new ReflectionMethod(Controller::class, 'renderTicket'))->invoke(null);
+  $cardSummaries = (new ReflectionProperty(Controller::class, 'ticketCardSummaries'))->getValue();
+  commentCheck(str_starts_with($cardSummaries['comments']->value(), '2 comments by '), 'A closed Comments card should summarize its comments.');
+  Controller::expandTicketCard(new EventContext('select', $cardSummaries['comments']));
   $viewer = $screen->widget('ticket-comments');
   commentCheck($viewer instanceof Text && str_contains($viewer->text(), 'First body'), 'Comments should begin in a read-only Text widget.');
   $originalComments = $viewer->text();
@@ -160,7 +164,7 @@ try {
       break;
     }
   }
-  for ($row = 0; $row < 4; $row++) {
+  for ($row = 0; $row < 5; $row++) {
     $screen->handleEvent(commentKey(SDL::KEY_DOWN));
   }
   $screen->handleEvent(commentKey(SDL::KEY_RETURN));

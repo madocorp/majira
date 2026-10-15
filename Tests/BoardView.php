@@ -75,11 +75,12 @@ $client = new class extends Client {
     return ['columnConfig' => ['columns' => [
       ['name' => 'To Do', 'statuses' => [['id' => '1'], ['id' => '2']]],
       ['name' => 'Done', 'statuses' => [['id' => '3']]],
-    ]]];
+    ]], 'estimation' => ['field' => ['fieldId' => 'customfield_1']]];
   }
   public function boardSprintIssues(int $boardId, int $sprintId, string $jql, array $fields, int $maxResults = 100, int $startAt = 0): array {
     boardCheck($boardId === 7 && $sprintId === 70 && $jql === '', 'Wrong sprint issue scope.');
     boardCheck(in_array('issuetype', $fields, true), 'Board requests must include issue types.');
+    boardCheck(in_array('priority', $fields, true) && in_array('customfield_1', $fields, true), 'Board requests must include priority and the board estimation field.');
     $this->starts[] = $startAt;
     return $startAt === 0
       ? ['issues' => [['key' => 'BOARD-1', 'fields' => ['summary' => 'First', 'status' => ['id' => '2', 'name' => 'Ready'], 'issuetype' => ['name' => 'Task']]]], 'total' => 2]
@@ -122,6 +123,11 @@ boardCheck(str_contains(boardRow($typedGrid, 0, 0, 20), '#AP-1234') && str_ends_
 $narrowGrid = new Grid(16, 4);
 $typedCard->paint(new GridWriter($narrowGrid, new Tile(0, 0, 16, 4)));
 boardCheck(str_contains(boardRow($narrowGrid, 0, 0, 16), '#AP-1234') && str_ends_with(rtrim(boardRow($narrowGrid, 0, 0, 16)), 'Sub-…'), 'Long issue types are shortened without covering the key.');
+boardCheck(BoardTicketCard::badge(2.0, 'Normal') === '2=' && BoardTicketCard::badge(0.5, 'Show-stopper') === '0.5‼' && BoardTicketCard::badge(null, 'Low') === '↓', 'Badges join story points and the priority mark.');
+boardCheck(BoardTicketCard::badge(3, 'Custom') === '3?' && BoardTicketCard::badge(null, '') === '', 'Unknown priorities show a question mark; missing values show nothing.');
+$badgeGrid = new Grid(16, 4);
+(new BoardTicketCard('AP-1', 'Summary', 'Jane Smithsonian', 'Task', '13▲'))->paint(new GridWriter($badgeGrid, new Tile(0, 0, 16, 4)));
+boardCheck(rtrim(boardRow($badgeGrid, 0, 3, 16)) === ' Jane Smit… 13▲', 'The badge is right aligned and shortens a long assignee.');
 
 $screen = (new ScreenParser())->parse('board.xml', new Style(), 'board', 'Board');
 $listScreen = (new ScreenParser())->parse('list.xml', new Style(), 'list', 'List');

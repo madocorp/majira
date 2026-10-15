@@ -5,6 +5,16 @@ namespace MAJIRA\Jira;
 /** Flattens Atlassian Document Format (issue description/comment bodies) into markdown-like plain text. */
 class Adf {
 
+  /** Bold, code, [text](url), <url>, or <#KEY>; links need an http(s) or mailto scheme. */
+  private const INLINE_MARKER = '~\*\*|`|\[([^\]\n]+)\]\(((?:https?://|mailto:)[^\s)]+)\)|<((?:https?://|mailto:)[^\s<>]+)>|<#([A-Z][A-Z0-9_]*-\d+)>~';
+
+  private static string $site = '';
+
+  /** Set the Jira site used for <#KEY> ticket links. */
+  public static function setSite(string $site): void {
+    self::$site = rtrim($site, '/');
+  }
+
   public static function toText(mixed $node): string {
     if (!is_array($node)) {
       return '';
@@ -133,16 +143,38 @@ class Adf {
     }
     $nodes = [];
     while ($text !== '') {
-      $bold = strpos($text, '**');
-      $code = strpos($text, '`');
-      $next = self::nearestInlineMarker($bold, $code);
-      if ($next === false) {
+      if (preg_match(self::INLINE_MARKER, $text, $match, PREG_OFFSET_CAPTURE) !== 1) {
         self::appendTextNode($nodes, $text);
         break;
       }
+      $next = $match[0][1];
       if ($next > 0) {
         self::appendTextNode($nodes, substr($text, 0, $next));
         $text = substr($text, $next);
+      }
+      // Only [text](url) and <url> are links; a bare URL stays plain text, as in Markdown.
+      if (isset($match[2]) && $match[2][1] >= 0) {
+        foreach (self::inlineNodes($match[1][0]) as $node) {
+          $node['marks'] = array_merge($node['marks'] ?? [], [self::linkMark($match[2][0])]);
+          $nodes[] = $node;
+        }
+        $text = substr($text, strlen($match[0][0]));
+        continue;
+      }
+      if (isset($match[3]) && $match[3][1] >= 0) {
+        self::appendTextNode($nodes, $match[3][0], [self::linkMark($match[3][0])]);
+        $text = substr($text, strlen($match[0][0]));
+        continue;
+      }
+      if (isset($match[4]) && $match[4][1] >= 0) {
+        // Without a known site the ticket link stays as typed.
+        if (self::$site === '') {
+          self::appendTextNode($nodes, $match[0][0]);
+        } else {
+          $nodes[] = ['type' => 'inlineCard', 'attrs' => ['url' => self::$site . '/browse/' . $match[4][0]]];
+        }
+        $text = substr($text, strlen($match[0][0]));
+        continue;
       }
       if (str_starts_with($text, '**')) {
         $end = strpos($text, '**', 2);
@@ -167,14 +199,8 @@ class Adf {
     return $nodes;
   }
 
-  private static function nearestInlineMarker(int|false $bold, int|false $code): int|false {
-    if ($bold === false) {
-      return $code;
-    }
-    if ($code === false) {
-      return $bold;
-    }
-    return min($bold, $code);
+  private static function linkMark(string $href): array {
+    return ['type' => 'link', 'attrs' => ['href' => $href]];
   }
 
   private static function appendTextNode(array &$nodes, string $text, array $marks = []): void {
@@ -219,7 +245,11 @@ class Adf {
       case 'emoji':
         return (string)($node['attrs']['shortName'] ?? $node['attrs']['text'] ?? '');
       case 'inlineCard':
-        return (string)($node['attrs']['url'] ?? '');
+        $url = (string)($node['attrs']['url'] ?? '');
+        if (self::$site !== '' && preg_match('~^' . preg_quote(self::$site, '~') . '/browse/([A-Z][A-Z0-9_]*-\d+)/?$~', $url, $key)) {
+          return '<#' . $key[1] . '>';
+        }
+        return $url === '' ? '' : '<' . $url . '>';
       case 'status':
         return (string)($node['attrs']['text'] ?? '');
       default:
@@ -269,6 +299,25 @@ class Adf {
     return $text;
   }
 
+  /** Render text nodes sharing one link as a single <url> or [label](url). */
+  private static function renderLink(array $nodes, string $href): string {
+    $label = implode('', array_map(self::renderText(...), $nodes));
+    $plain = count($nodes) === 1 && empty(array_filter($nodes[0]['marks'], fn($mark): bool => ($mark['type'] ?? '') !== 'link'));
+    return $plain && $label === $href ? '<' . $href . '>' : '[' . $label . '](' . $href . ')';
+  }
+
+  private static function linkHref(array $node): string {
+    if (($node['type'] ?? '') !== 'text') {
+      return '';
+    }
+    foreach ($node['marks'] ?? [] as $mark) {
+      if (is_array($mark) && ($mark['type'] ?? '') === 'link') {
+        return (string)($mark['attrs']['href'] ?? '');
+      }
+    }
+    return '';
+  }
+
   private static function renderChildren(array $node): string {
     $text = '';
     $children = $node['content'] ?? [];
@@ -294,6 +343,16 @@ class Adf {
           continue;
         }
         $i = $start;
+      }
+      $href = self::linkHref($child);
+      if ($href !== '') {
+        // Jira splits a link label into one text node per mark change.
+        $linked = [$child];
+        while (isset($children[$i + 1]) && is_array($children[$i + 1]) && self::linkHref($children[$i + 1]) === $href) {
+          $linked[] = $children[++$i];
+        }
+        $text .= self::renderLink($linked, $href);
+        continue;
       }
       $text .= self::renderNode($child);
     }

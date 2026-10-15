@@ -19,7 +19,7 @@ Settings::save([]);
 $filters = FilterState::defaults();
 $filters['customFilters'] = [
   ['name' => 'new', 'jql' => '', 'form' => FilterState::formValues($filters), 'scope' => FilterState::scopeValues([])],
-  ['name' => 'Release', 'jql' => 'status in ("Open")', 'form' => FilterState::formValues(['status' => ['Open'], 'search' => ['text' => 'launch']]), 'scope' => FilterState::scopeValues(['projectKey' => 'AP'])],
+  ['name' => 'Release', 'jql' => 'status in ("Open")', 'form' => FilterState::formValues(['status' => ['Open'], 'search' => ['text' => 'launch'], 'parent' => ' ap-5762 ']), 'scope' => FilterState::scopeValues(['projectKey' => 'AP'])],
   ['name' => 'release', 'jql' => 'status in ("Closed")'],
 ];
 FilterState::save($filters);
@@ -28,6 +28,8 @@ expectSavedFilter(count($loaded['customFilters']) === 2, 'Saved filter names mus
 expectSavedFilter($loaded['customFilters'][0]['jql'] === '' && $loaded['customFilters'][0]['form']['status'] === [], 'A new blank filter must survive persistence.');
 expectSavedFilter($loaded['customFilters'][1]['form']['status'] === ['Open'] && $loaded['customFilters'][1]['form']['search']['text'] === 'launch', 'Saved form choices must survive persistence.');
 expectSavedFilter($loaded['customFilters'][1]['scope']['projectKey'] === 'AP', 'Saved project scope must survive persistence.');
+expectSavedFilter($loaded['customFilters'][1]['form']['parent'] === 'AP-5762', 'A saved parent key must be trimmed and upper case.');
+expectSavedFilter((new JqlBuilder())->generatedFor(['parent' => 'AP-5762']) === 'parent = "AP-5762"', 'A parent key must filter by parent.');
 expectSavedFilter(FilterState::normalize(['selectedCustomFilter' => 'Missing', 'mode' => 'jql'])['selectedCustomFilter'] === '', 'A missing saved filter must leave the current draft unnamed.');
 expectSavedFilter($loaded['customFilters'][0]['mode'] === 'builder', 'New filters must start in builder mode.');
 expectSavedFilter($loaded['customFilters'][1]['mode'] === 'jql', 'Existing nonempty saved queries must remain editable as JQL.');

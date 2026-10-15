@@ -7,6 +7,8 @@ use MAJIRA\Jira\Adf;
 /** Converts Jira edit metadata and issue values into Majira editor models and update payloads. */
 class TicketFieldEditModel {
 
+  private const ISSUE_KEY_FIELDS = ['com.pyxis.greenhopper.jira:gh-epic-link', 'com.atlassian.jpo:jpo-custom-field-parent'];
+
   public function build(array $issue, string $fieldId, string $jiraField, array $meta, string $fallbackName): array|false {
     $schema = is_array($meta['schema'] ?? null) ? $meta['schema'] : [];
     $type = $jiraField === 'description' ? 'doc' : (string)($schema['type'] ?? '');
@@ -37,6 +39,9 @@ class TicketFieldEditModel {
         'value' => $this->choiceValue($raw, $allowed, $type === 'array'),
       ];
     }
+    if ($type === 'issuelink' || ($type === 'any' && in_array($schema['custom'] ?? '', self::ISSUE_KEY_FIELDS, true))) {
+      return $base + ['kind' => 'issue-key', 'value' => $this->issueKeyText($raw)];
+    }
     return match ($type) {
       'doc' => $base + ['kind' => 'doc', 'value' => is_array($raw) ? Adf::toText($raw) : ''],
       'string' => $base + ['kind' => 'string', 'value' => is_scalar($raw) ? (string)$raw : $this->formatValue($raw)],
@@ -60,6 +65,7 @@ class TicketFieldEditModel {
       'choice' => $this->singleChoiceValue($model, $editorValue),
       'multi-choice' => $this->multiChoiceValue($model, $editorValue),
       'string-list' => $this->stringListValue((string)$editorValue),
+      'issue-key' => $this->issueKeyValue($model, $editorValue),
       default => throw new \InvalidArgumentException('Unsupported editor kind.'),
     };
     if (!empty($model['required']) && ($value === null || $value === '' || $value === [])) {
@@ -207,6 +213,26 @@ class TicketFieldEditModel {
       throw new \InvalidArgumentException('Date must use YYYY-MM-DD.');
     }
     return $text;
+  }
+
+  /** Read a key from a parent object, a Parent Link wrapper, or an Epic Link string. */
+  private function issueKeyText(mixed $raw): string {
+    if (is_array($raw)) {
+      $raw = $raw['key'] ?? $raw['data']['key'] ?? '';
+    }
+    return is_scalar($raw) ? (string)$raw : '';
+  }
+
+  /** Validate an issue key; parent takes an object, the custom link fields take the key. */
+  private function issueKeyValue(array $model, mixed $editorValue): array|string|null {
+    $key = FilterState::parentKey($editorValue);
+    if ($key === '') {
+      return null;
+    }
+    if (preg_match('/^[A-Z][A-Z0-9_]*-[0-9]+$/D', $key) !== 1) {
+      throw new \InvalidArgumentException('Enter an issue key like AP-123.');
+    }
+    return $model['type'] === 'issuelink' ? ['key' => $key] : $key;
   }
 
   private function stringListText(mixed $value): string {

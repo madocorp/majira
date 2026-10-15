@@ -95,6 +95,7 @@ try {
   ]]];
   (new ReflectionProperty(Controller::class, 'ticket'))->setValue(null, $ticketData);
   (new ReflectionMethod(Controller::class, 'renderTicket'))->invoke(null);
+  Controller::expandTicketCard(new EventContext('select', (new ReflectionProperty(Controller::class, 'ticketCardSummaries'))->getValue()['attachments']));
   $table = $ticket->widget('ticket-attachments');
   $table->setCursor(0);
   foreach ($ticket->layout->leaves() as $leaf) {

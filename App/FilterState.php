@@ -61,6 +61,7 @@ class FilterState {
     if (!array_key_exists('lastJql', $filters)) {
       $normalized['lastJql'] = $normalized['customJql'];
     }
+    $normalized['parent'] = self::parentKey($filters['parent'] ?? '');
     $search = is_array($filters['search'] ?? null) ? $filters['search'] : [];
     $normalized['search'] = [
       'text' => trim((string)($search['text'] ?? '')),
@@ -96,6 +97,7 @@ class FilterState {
       'created' => '',
       'createdTo' => '',
       'search' => self::defaultSearch(),
+      'parent' => '',
       'orderBy' => [],
       'customJql' => '',
       'customJqlEdited' => false,
@@ -121,6 +123,11 @@ class FilterState {
       'comments' => true,
       'exact' => true,
     ];
+  }
+
+  /** Jira keys are upper case; trim typed input to match them. */
+  public static function parentKey(mixed $value): string {
+    return strtoupper(trim((string)$value));
   }
 
   public static function stringList(mixed $values): array {
@@ -201,6 +208,7 @@ class FilterState {
     $search = is_array($filters['search'] ?? null) ? $filters['search'] : [];
     $form['search'] = array_replace($defaults['search'], array_intersect_key($search, $defaults['search']));
     $form['search']['text'] = trim((string)$form['search']['text']);
+    $form['parent'] = self::parentKey($filters['parent'] ?? '');
     return $form;
   }
 

@@ -6,6 +6,7 @@ use MAJIRA\Jira\Adf;
 use MAJIRA\Highlighting\MarkdownHighlighter;
 use SPTK\App;
 use SPTK\Core\AppData;
+use SPTK\Core\Clipboard;
 use SPTK\Core\Window;
 use SPTK\Core\Style;
 use SPTK\Core\Widget;
@@ -69,11 +70,16 @@ class Controller {
   private static ?string $commentCurrentAccountId = null;
   private static ?LayoutLeaf $attachmentPreviewLeaf = null;
   private static ?int $attachmentPreviewRow = null;
-  private const TICKET_CARDS = ['description', 'comments', 'attachments', 'related'];
+  private const TICKET_CARDS = ['description' => 'Description', 'comments' => 'Comments', 'attachments' => 'Attachments', 'related' => 'Related tickets'];
+  private static array $ticketCardSummaries = [];
+  private static array $ticketCardWidgets = [];
   private static array $ticketExpanded = [];
   private static array $ticketCompact = [];
   private static array $ticketProperties = [];
   private static array $ticketPropertyNodes = [];
+  private static ?LayoutLeaf $ticketKeyTitleLeaf = null;
+  private static ?LayoutLeaf $ticketKeyEditorLeaf = null;
+  private static bool $ticketKeyOpenRequested = false;
   private static ?LayoutNode $ticketPropertyEditorNode = null;
   private static ?LayoutLeaf $ticketPropertyEditorLeaf = null;
   private static ?Widget $ticketPropertyEditorWidget = null;
@@ -106,7 +112,7 @@ class Controller {
   private static ?LayoutNode $listSidebar = null;
   private static bool $sidebarOpen = false;
   private static ?string $sidebarSelection = null;
-  private const FILTER_TILES = ['name', 'project', 'board', 'sprint', 'search', 'updated', 'created', 'status', 'type', 'priority', 'assignee'];
+  private const FILTER_TILES = ['name', 'project', 'board', 'sprint', 'search', 'parent', 'updated', 'created', 'status', 'type', 'priority', 'assignee'];
   private static array $filterExpanded = [];
   private static array $filterCompact = [];
   private static array $filterWidgets = [];
@@ -122,6 +128,7 @@ class Controller {
   public static function initialize(EventContext $event): void {
     self::$window = array_values(App::eventLoop()->windows())[0];
     self::$data = new JiraData();
+    Adf::setSite((string)(Settings::load()['site'] ?? ''));
     self::prepareFieldSettings();
     self::prepareAttachmentPreview();
     self::prepareListSidebar();
@@ -710,6 +717,7 @@ class Controller {
     self::$boardCardIndexes = [];
     self::$boardColumnTitles = [];
     $cardSeparatorColor = (new Style())->background->darkened(0.6);
+    $estimate = (string)(self::$boardResult['configuration']['estimation']['field']['fieldId'] ?? '');
     foreach ($columns as $columnIndex => $column) {
       self::$boardColumnTitles[] = (string)$column['name'];
       $cards = [];
@@ -721,7 +729,8 @@ class Controller {
         $summary = trim((string)($issue['fields']['summary'] ?? ''));
         $assignee = trim((string)($issue['fields']['assignee']['displayName'] ?? ''));
         $type = trim((string)($issue['fields']['issuetype']['name'] ?? ''));
-        $card = new BoardTicketCard($key, $summary, $assignee, $type);
+        $badge = BoardTicketCard::badge($issue['fields'][$estimate] ?? null, (string)($issue['fields']['priority']['name'] ?? ''));
+        $card = new BoardTicketCard($key, $summary, $assignee, $type, $badge);
         $cards[] = new LayoutLeaf('BoardTicketCard', '1*', (string)BoardTicketCard::HEIGHT, $card, [
           new EventDefinition('activate', null, self::class . '::openBoardIssue'),
           new EventDefinition('select', null, self::class . '::boardColumnSelected'),
@@ -1478,6 +1487,7 @@ class Controller {
       return;
     }
     $filters['search']['text'] = trim(self::input('filters', 'search')->getValue());
+    $filters['parent'] = FilterState::parentKey(self::input('filters', 'parent')->getValue());
     foreach (['updated', 'created'] as $field) {
       $filters[$field] = self::$dateSlots[$field]['from']['enabled'] ? self::date('filters', $field . '-date')->getValue() : '';
       $filters[$field . 'To'] = self::$dateSlots[$field]['to']['enabled'] ? self::date('filters', $field . '-to-date')->getValue() : '';
@@ -1513,9 +1523,11 @@ class Controller {
     self::$window->refreshLayout();
   }
 
-  /** Ignore navigation keys in the search input. */
-  public static function searchChanged(EventContext $event): void {
-    if (trim(self::input('filters', 'search')->getValue()) !== FilterState::load()['search']['text']) {
+  /** Ignore navigation keys in the search and parent inputs. */
+  public static function textFilterChanged(EventContext $event): void {
+    $filters = FilterState::load();
+    if (trim(self::input('filters', 'search')->getValue()) !== $filters['search']['text']
+      || FilterState::parentKey(self::input('filters', 'parent')->getValue()) !== $filters['parent']) {
       self::saveGeneratedFilter($event);
     }
   }
@@ -1558,7 +1570,7 @@ class Controller {
   public static function switchToJqlMode(EventContext $event): void {
     $filters = FilterState::load();
     if ($filters['mode'] === 'jql') {
-      self::status('This filter is already in JQL mode.');
+      self::backgroundStatus('This filter is already in JQL mode.');
       return;
     }
     $jql = (new JqlBuilder())->generatedFor($filters);
@@ -1584,7 +1596,7 @@ class Controller {
     self::renderFilterMode();
     self::input('list', 'jql')->setValue($jql);
     self::$window->refreshLayout();
-    self::status('JQL mode saved. Recreate this filter to use the builder again.');
+    self::backgroundStatus('JQL mode saved. Recreate this filter to use the builder again.');
   }
 
   /** Reset the current saved or unnamed filter without changing its identity. */
@@ -1595,7 +1607,7 @@ class Controller {
     self::renderNavigation();
     self::renderFilters();
     self::input('list', 'jql')->setValue('');
-    self::status('Filter cleared.');
+    self::backgroundStatus('Filter cleared.');
     self::$window->refreshLayout();
   }
 
@@ -1623,7 +1635,7 @@ class Controller {
     self::input('list', 'jql')->setValue('');
     self::openFilterTile('name', false);
     self::$window->screen('filters')->activateLeaf(self::expandedFilterLeaf('name'));
-    self::status('New filter added.');
+    self::backgroundStatus('New filter added.');
     self::$window->refreshLayout();
   }
 
@@ -1710,7 +1722,7 @@ class Controller {
     self::renderCustomFilters();
     self::refreshFilterSummaries();
     self::$window->refreshLayout();
-    self::status(($old === '' ? 'Saved filter: ' : 'Renamed filter: ') . $name);
+    self::backgroundStatus(($old === '' ? 'Saved filter: ' : 'Renamed filter: ') . $name);
   }
 
   private static function nameInUse(string $name, array $filters, string $except = ''): bool {
@@ -1734,7 +1746,7 @@ class Controller {
       return false;
     }
     self::stageNamedFilter($name, $selected, true);
-    self::status('Using saved filter: ' . $name);
+    self::backgroundStatus('Using saved filter: ' . $name);
     return true;
   }
 
@@ -1763,7 +1775,7 @@ class Controller {
       self::openFilterTile('name', false);
       self::input('list', 'jql')->setValue('');
     }
-    self::status('Deleted filter: ' . $name);
+    self::backgroundStatus('Deleted filter: ' . $name);
     self::$window->refreshLayout();
   }
 
@@ -1860,7 +1872,12 @@ class Controller {
         self::$ticketEditMetaKey = self::$ticketKey;
       }
       $meta = self::$ticketEditMeta[$jiraField] ?? null;
-      if (is_array($meta)) {
+      if (!is_array($meta) || TicketAgileFields::isSprint($meta)) {
+        $model = self::agilePropertyModel($field, $jiraField, is_array($meta));
+        if ($model === false) {
+          return true;
+        }
+      } else {
         $meta = self::propertyUserChoices($jiraField, $meta);
         if ($meta === null) {
           return true;
@@ -1876,11 +1893,28 @@ class Controller {
     return true;
   }
 
+  /** Build a Sprint or board estimate editor; false means a Jira request failed. */
+  private static function agilePropertyModel(string $field, string $jiraField, bool $sprint): array|false|null {
+    $project = (string)(self::$ticket['fields']['project']['key'] ?? strtok(self::$ticketKey, '-'));
+    $name = self::$ticketProperties[$field]->title();
+    $model = null;
+    $loaded = self::request('GET Jira board data for ' . self::$ticketKey, static function() use ($project, $name, $jiraField, $sprint, &$model): void {
+      $agile = new TicketAgileFields(self::$data);
+      $board = $agile->boardId($project);
+      if ($board === '') {
+        return;
+      }
+      $model = $sprint
+        ? $agile->sprintModel(self::$ticket, $jiraField, $name, $board)
+        : $agile->estimateModel(self::$ticket, $jiraField, $name, $board);
+    });
+    return $loaded ? $model : false;
+  }
+
   /** Fill user fields when edit metadata omits its selectable accounts. */
   private static function propertyUserChoices(string $jiraField, array $meta): ?array {
     $schema = is_array($meta['schema'] ?? null) ? $meta['schema'] : [];
-    if (!in_array($jiraField, ['assignee', 'reporter'], true) || !empty($meta['allowedValues'])
-      || ($schema['type'] ?? '') !== 'user') {
+    if (!empty($meta['allowedValues']) || ($schema['type'] ?? '') !== 'user') {
       return $meta;
     }
     $users = [];
@@ -1912,7 +1946,7 @@ class Controller {
     $name = (string)$model['name'];
     $value = $model['value'] ?? '';
     $height = 2;
-    if (in_array($kind, ['choice', 'transition', 'multi-choice', 'boolean'], true)) {
+    if (in_array($kind, ['choice', 'transition', 'sprint', 'multi-choice', 'boolean'], true)) {
       $items = [];
       $options = $kind === 'boolean'
         ? [['value' => '1', 'text' => 'Yes'], ['value' => '0', 'text' => 'No']]
@@ -1996,7 +2030,9 @@ class Controller {
       self::$ticketPropertySaveValue = (string)$value;
     } else {
       try {
-        self::$ticketPropertySaveValue = (new TicketFieldEditModel())->saveValue(self::$ticketPropertyEditModel, $value);
+        self::$ticketPropertySaveValue = in_array($kind, ['sprint', 'estimate'], true)
+          ? (new TicketAgileFields(self::$data))->saveValue(self::$ticketPropertyEditModel, $value)
+          : (new TicketFieldEditModel())->saveValue(self::$ticketPropertyEditModel, $value);
       } catch (\Throwable $error) {
         self::status($error->getMessage(), true);
         return true;
@@ -2045,6 +2081,8 @@ class Controller {
     $saved = self::request('Update ' . $jiraField . ' on ' . self::$ticketKey, static function() use ($model, $jiraField, $value): void {
       if ($model['kind'] === 'transition') {
         self::$data->client()->transitionIssue(self::$ticketKey, (string)$value);
+      } else if (in_array($model['kind'], ['sprint', 'estimate'], true)) {
+        (new TicketAgileFields(self::$data))->save(self::$ticketKey, $model, $value);
       } else {
         self::$data->client()->updateIssueFields(self::$ticketKey, [$jiraField => $value]);
       }
@@ -2228,8 +2266,85 @@ class Controller {
     }
     self::request('GET children of ' . self::$ticketKey, static function(): void {
       self::$data->children(self::$ticketKey);
-      self::renderRelatedTickets(is_array(self::$ticket['fields'] ?? null) ? self::$ticket['fields'] : []);
+      $fields = is_array(self::$ticket['fields'] ?? null) ? self::$ticket['fields'] : [];
+      self::renderRelatedTickets($fields);
+      self::renderTicketCardSummaries($fields);
     });
+  }
+
+  /** Turn the ticket key title into an input where another key can be typed. */
+  public static function editTicketKey(EventContext $event): bool {
+    if (!$event->widget instanceof Title || $event->widget->id() !== 'ticket-key' || self::$ticketKeyEditorLeaf !== null) {
+      return false;
+    }
+    $input = new Input(self::$ticketKey, new Style());
+    $input->setId('ticket-key-editor');
+    $input->setTips('Type a ticket key; Return opens it, Esc cancels.');
+    self::$ticketKeyOpenRequested = false;
+    self::$ticketKeyEditorLeaf = new LayoutLeaf('Input', '1*', '1', $input, [
+      new EventDefinition('keyDown', 'enter', self::class . '::requestTicketKeyOpen'),
+      new EventDefinition('deactivate', null, self::class . '::finishTicketKeyEdit'),
+    ]);
+    $screen = self::$window->screen('ticket');
+    $screen->layout->findNode('ticket-right')->replaceChild(self::ticketKeyLeaf(), self::$ticketKeyEditorLeaf);
+    $screen->setLayout($screen->layout);
+    $screen->activateLeaf(self::$ticketKeyEditorLeaf);
+    self::$window->refreshLayout();
+    return true;
+  }
+
+  /** Copy the Jira browser URL of the current ticket from the key title. */
+  public static function copyTicketUrl(EventContext $event): bool {
+    if (!$event->widget instanceof Title || $event->widget->id() !== 'ticket-key' || self::$ticketKey === '') {
+      return false;
+    }
+    $url = rtrim((string)(Settings::load()['site'] ?? ''), '/') . '/browse/' . self::$ticketKey;
+    Clipboard::set($url);
+    self::backgroundStatus('Copied ' . $url);
+    return true;
+  }
+
+  /** Mark that Return, not Esc, released the ticket key input. */
+  public static function requestTicketKeyOpen(EventContext $event): bool {
+    self::$ticketKeyOpenRequested = true;
+    return false;
+  }
+
+  /** Restore the key title, then open the typed ticket after Return. */
+  public static function finishTicketKeyEdit(EventContext $event): void {
+    $leaf = self::$ticketKeyEditorLeaf;
+    if ($leaf === null) {
+      return;
+    }
+    self::$ticketKeyEditorLeaf = null;
+    $key = strtoupper(trim($leaf->instance()->getValue()));
+    $screen = self::$window->screen('ticket');
+    $titleLeaf = self::ticketKeyLeaf();
+    $screen->layout->findNode('ticket-right')->replaceChild($leaf, $titleLeaf);
+    $screen->setLayout($screen->layout);
+    $screen->selectLeaf($titleLeaf);
+    self::$window->refreshLayout();
+    if (!self::$ticketKeyOpenRequested || $key === '' || $key === self::$ticketKey) {
+      return;
+    }
+    if (!preg_match('/^[A-Z][A-Z0-9_]*-\d+$/', $key)) {
+      self::status($key . ' is not a valid ticket key.', true);
+      return;
+    }
+    self::openTicket($key);
+  }
+
+  /** Find the layout leaf that holds the ticket key title. */
+  private static function ticketKeyLeaf(): LayoutLeaf {
+    if (self::$ticketKeyTitleLeaf === null) {
+      $title = self::title('ticket', 'ticket-key');
+      foreach (self::$window->screen('ticket')->layout->findNode('ticket-right')->leaves() as $leaf) {
+        if ($leaf->instance() === $title) {
+          self::$ticketKeyTitleLeaf = $leaf;
+        }
+      }
+    }
+    return self::$ticketKeyTitleLeaf;
   }
 
   /** Open the related issue selected in the ticket card. */
@@ -2470,6 +2585,7 @@ class Controller {
     self::$editingFilterName = $filters['selectedCustomFilter'];
     self::input('filters', 'custom-name')->setValue(self::$editingFilterName);
     self::input('filters', 'search')->setValue($filters['search']['text']);
+    self::input('filters', 'parent')->setValue($filters['parent']);
     foreach (['updated', 'created'] as $field) {
       self::date('filters', $field . '-date')->setValue($filters[$field] ?: date('Y-m-d'));
       self::date('filters', $field . '-to-date')->setValue($filters[$field . 'To'] ?: self::date('filters', $field . '-date')->getValue());
@@ -2713,6 +2829,7 @@ class Controller {
       'board' => self::selectedFilterLabel('boards', (string)($settings['boardId'] ?? '')),
       'sprint' => self::selectedFilterLabel('sprints', (string)($settings['sprintId'] ?? '')),
       'search' => self::input('filters', 'search')->getValue(),
+      'parent' => FilterState::parentKey(self::input('filters', 'parent')->getValue()),
       'updated' => self::dateSummary('updated'),
       'created' => self::dateSummary('created'),
     ];
@@ -2851,12 +2968,20 @@ class Controller {
       new EventDefinition('deactivate', null, self::class . '::finishCommentEdit'),
     ]);
     $deck = $screen->layout->findNode('ticket-deck');
-    foreach (self::TICKET_CARDS as $key) {
+    foreach (self::TICKET_CARDS as $key => $title) {
       $node = $deck->findNode('ticket-' . $key . '-card');
-      $expanded = new LayoutNode('vertical', '1*', '3*', id: 'ticket-open-' . $key);
-      $compact = new LayoutNode('vertical', '1*', '1*', id: 'ticket-closed-' . $key);
+      foreach ($node->leaves() as $leaf) {
+        self::$ticketCardWidgets[$leaf->instance()->id()] = $leaf->instance();
+      }
+      $expanded = new LayoutNode('vertical', '1*', '1*', id: 'ticket-open-' . $key);
       $expanded->addNode($node);
-      $compact->addNode($node);
+      $summary = new FilterSummary($title);
+      $summary->setId('ticket-card-' . $key);
+      self::$ticketCardSummaries[$key] = $summary;
+      $compact = new LayoutNode('vertical', '1*', '2', id: 'ticket-closed-' . $key);
+      $compact->addLeaf(new LayoutLeaf('FilterSummary', '1*', '2', $summary, [
+        new EventDefinition('select', null, self::class . '::expandTicketCard'),
+      ]));
       $deck->replaceChild($node, $key === self::$activeTicketCard ? $expanded : $compact);
       self::$ticketExpanded[$key] = $expanded;
       self::$ticketCompact[$key] = $compact;
@@ -2904,17 +3029,10 @@ class Controller {
     self::$window->screen('ticket')->setLayout(self::$window->screen('ticket')->layout);
   }
 
-  /** Expand the ticket card reached with an arrow key. */
+  /** Expand the closed ticket card reached with an arrow key. */
   public static function expandTicketCard(EventContext $event): void {
     $id = $event->widget?->id() ?? '';
-    $key = match ($id) {
-      'ticket-description' => 'description',
-      'ticket-comments' => 'comments',
-      'ticket-comment-editor' => 'comments',
-      'ticket-attachments' => 'attachments',
-      'ticket-related' => 'related',
-      default => '',
-    };
+    $key = str_starts_with($id, 'ticket-card-') ? substr($id, 12) : '';
     if (!isset(self::$ticketExpanded[$key]) || $key === self::$activeTicketCard) {
       return;
     }
@@ -2924,6 +3042,7 @@ class Controller {
     $deck->replaceChild(self::$ticketCompact[$key], self::$ticketExpanded[$key]);
     self::$activeTicketCard = $key;
     $screen->setLayout($screen->layout);
+    $screen->selectLeaf(self::$ticketExpanded[$key]->leaves()[0]);
     self::$window->refreshLayout();
   }
 
@@ -3028,10 +3147,42 @@ class Controller {
     return true;
   }
 
+  /** Fill the one-line summaries shown on closed ticket cards. */
+  private static function renderTicketCardSummaries(array $fields): void {
+    if (self::$ticketCardSummaries === []) {
+      return;
+    }
+    $description = trim(Adf::toText($fields['description'] ?? null));
+    $lines = $description === '' ? 0 : substr_count($description, "\n") + 1;
+    self::$ticketCardSummaries['description']->setValue($lines === 0 ? 'No description' : self::plural($lines, 'line'));
+    $comments = array_filter($fields['comment']['comments'] ?? [], 'is_array');
+    $total = (int)($fields['comment']['total'] ?? count($comments));
+    $authors = array_values(array_unique(array_map(fn(array $comment): string => (string)($comment['author']['displayName'] ?? 'Unknown'), $comments)));
+    $by = count($authors) > 3 ? implode(', ', array_slice($authors, 0, 3)) . ' and others' : implode(', ', $authors);
+    self::$ticketCardSummaries['comments']->setValue($total === 0 ? 'No comments' : self::plural($total, 'comment') . ' by ' . $by);
+    $files = array_map(fn(array $attachment): string => (string)($attachment['filename'] ?? ''), self::$ticketAttachments);
+    self::$ticketCardSummaries['attachments']->setValue($files === [] ? 'No attachments' : self::plural(count($files), 'attachment') . ': ' . self::firstThree($files));
+    $related = self::$relatedTicketKeys === [] ? 'No related tickets' : self::plural(count(self::$relatedTicketKeys), 'related ticket') . ': ' . self::firstThree(self::$relatedTicketKeys);
+    if (self::$ticketKey !== '' && self::$data->cachedChildren(self::$ticketKey) === null) {
+      $related .= '; children not loaded yet (Return loads them)';
+    }
+    self::$ticketCardSummaries['related']->setValue($related);
+  }
+
+  /** Format a count with a singular or plural noun. */
+  private static function plural(int $count, string $noun): string {
+    return $count . ' ' . $noun . ($count === 1 ? '' : 's');
+  }
+
+  /** Join the first three items and mark that more exist. */
+  private static function firstThree(array $items): string {
+    return implode(', ', array_slice($items, 0, 3)) . (count($items) > 3 ? ', …' : '');
+  }
+
   /** Show fields, comments, attachments, and related issues of the current ticket. */
   private static function renderTicket(): void {
     $fields = is_array(self::$ticket['fields'] ?? null) ? self::$ticket['fields'] : [];
-    self::title('ticket', 'ticket-key')->setText(self::$ticketKey === '' ? 'Ticket' : self::$ticketKey);
+    self::ticketKeyLeaf()->instance()->setText(self::$ticketKey === '' ? 'Ticket' : self::$ticketKey);
     self::input('ticket', 'ticket-summary')->setValue((string)($fields['summary'] ?? ''));
     self::editor('ticket', 'ticket-description')->setValue(Adf::toText($fields['description'] ?? null));
     self::text('ticket', 'ticket-comments')->setText(self::$ticketKey === '' ? '' : self::ticketCommentsText());
@@ -3045,6 +3196,7 @@ class Controller {
     }
     self::table('ticket', 'ticket-attachments')->setRows(['Author', 'File', 'Size / created'], $attachments);
     self::renderRelatedTickets($fields);
+    self::renderTicketCardSummaries($fields);
     foreach (self::$ticketProperties as $key => $summary) {
       $value = self::$ticketKey === '' ? '' : FieldConfiguration::value(self::$ticket, $key);
       $value = trim(preg_replace('/\s+/u', ' ', $value) ?? '');
@@ -3151,7 +3303,7 @@ class Controller {
         continue;
       }
       if ($lines !== []) {
-        $lines[] = '';
+        array_push($lines, '', '');
       }
       $start = count($lines);
       $author = (string)($comment['author']['displayName'] ?? 'Unknown');
@@ -3235,7 +3387,7 @@ class Controller {
 
   /** Find a table by XML id. */
   private static function table(string $screen, string $id): Table {
-    return self::$window->screen($screen)->widget($id);
+    return self::$window->screen($screen)->widget($id) ?? self::$ticketCardWidgets[$id];
   }
 
   /** Find a title by XML id. */
@@ -3249,11 +3401,11 @@ class Controller {
 
   /** Find a text widget by XML id. */
   private static function text(string $screen, string $id): Text {
-    return self::$window->screen($screen)->widget($id);
+    return self::$window->screen($screen)->widget($id) ?? self::$ticketCardWidgets[$id];
   }
 
-  /** Find an editor by XML id. */
+  /** Find an editor by XML id; closed ticket cards are outside the layout. */
   private static function editor(string $screen, string $id): TextEditor {
-    return self::$window->screen($screen)->widget($id) ?? ($screen === 'filters' ? self::$filterWidgets[$id] : null);
+    return self::$window->screen($screen)->widget($id) ?? ($screen === 'filters' ? self::$filterWidgets[$id] : self::$ticketCardWidgets[$id]);
   }
 }

@@ -33,7 +33,7 @@ if ($middleChildren[0] !== $column || $column->findNode('filter-name')->leaves()
   throw new RuntimeException('The filter name input must be the first builder card.');
 }
 $children = (new ReflectionProperty($column, 'children'))->getValue($column);
-if (count(array_filter($children, fn($child): bool => $child instanceof LayoutSeparator)) !== 10 || $children[0] !== $column->findNode('filter-name')) {
+if (count(array_filter($children, fn($child): bool => $child instanceof LayoutSeparator)) !== 11 || $children[0] !== $column->findNode('filter-name')) {
   throw new RuntimeException('The builder deck must start with Filter name.');
 }
 foreach (['project', 'board', 'sprint'] as $group) {
@@ -58,7 +58,7 @@ foreach ($buttons as $leaf) {
 if ($hotkeys !== ['n' => 'New filter', 'j' => 'Switch to JQL', 'a' => 'Apply', 'd' => 'Delete filter', 'c' => 'Clear filter', 'r' => 'Clear cache']) {
   throw new RuntimeException('Filter actions need the N, J, A, D, C, and R shortcuts.');
 }
-$keys = ['name', 'project', 'board', 'sprint', 'search', 'updated', 'created', 'status', 'type', 'priority', 'assignee'];
+$keys = ['name', 'project', 'board', 'sprint', 'search', 'parent', 'updated', 'created', 'status', 'type', 'priority', 'assignee'];
 foreach (['updated', 'created'] as $field) {
   if ($screen->widget($field . '-mode') !== null || !$screen->widget($field . '-date') instanceof DateSelector || !$screen->widget($field . '-to-date') instanceof DateSelector
     || $screen->widget($field . '-date')->preferredHeight() !== 10 || $screen->widget($field . '-to-date')->preferredHeight() !== 10

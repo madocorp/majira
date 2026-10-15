@@ -2,6 +2,8 @@
   <Event type="keyDown" key="r" action="MAJIRA\App\Controller::refreshTicket" />
   <Event type="keyDown" key="enter" action="MAJIRA\App\Controller::editSelectedComment" />
   <Event type="keyDown" key="enter" action="MAJIRA\App\Controller::editTicketProperty" />
+  <Event type="keyDown" key="enter" action="MAJIRA\App\Controller::editTicketKey" />
+  <Event type="keyDown" key="ctrl+c" action="MAJIRA\App\Controller::copyTicketUrl" />
   <Event type="keyDown" key="insert" action="MAJIRA\App\Controller::newComment" />
   <Event type="keyDown" key="delete" action="MAJIRA\App\Controller::deleteSelectedComment" />
   <Layout>

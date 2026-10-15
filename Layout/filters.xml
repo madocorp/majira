@@ -19,7 +19,9 @@
         <Separator />
         <Layout id="filter-sprint" height="1*"><List id="sprints" title="Sprint" height="1*"><Event type="accept" action="MAJIRA\App\Controller::selectSprint" /></List></Layout>
         <Separator />
-        <Layout id="filter-search" height="1*"><Input id="search" label="Search text" height="1*"><Event type="keyUp" action="MAJIRA\App\Controller::searchChanged" /><Event type="deactivate" action="MAJIRA\App\Controller::searchChanged" /></Input></Layout>
+        <Layout id="filter-search" height="1*"><Input id="search" label="Search text" height="1*"><Event type="keyUp" action="MAJIRA\App\Controller::textFilterChanged" /><Event type="deactivate" action="MAJIRA\App\Controller::textFilterChanged" /></Input></Layout>
+        <Separator />
+        <Layout id="filter-parent" height="1*"><Input id="parent" label="Parent key" height="1*"><Event type="keyUp" action="MAJIRA\App\Controller::textFilterChanged" /><Event type="deactivate" action="MAJIRA\App\Controller::textFilterChanged" /></Input></Layout>
         <Separator />
         <Layout id="filter-updated" height="1*">
           <Layout direction="horizontal" height="1*">

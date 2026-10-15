@@ -14,6 +14,9 @@ final class MarkdownHighlighter extends RuleSyntaxHighlighter {
       ['regex' => '/^(?:[-*+•]|\d+[.)])\s+/u', 'style' => 'list', 'first' => true],
       ['regex' => '/^\*\*[^*]+\*\*/u', 'style' => 'strong'],
       ['regex' => '/^`[^`]+`/u', 'style' => 'code'],
+      ['regex' => '~^\[[^\]\n]+\]\((?:https?://|mailto:)[^\s)]+\)~u', 'style' => 'link'],
+      ['regex' => '~^<(?:https?://|mailto:)[^\s<>]+>~u', 'style' => 'link'],
+      ['regex' => '~^<#[A-Z][A-Z0-9_]*-\d+>~u', 'style' => 'link'],
       ['regex' => '/^>\s+/u', 'style' => 'quote', 'first' => true],
     ], [
       'header' => ['fg' => '#ffffff', 'bg' => '#982461', 'fillRow' => true],
@@ -21,7 +24,8 @@ final class MarkdownHighlighter extends RuleSyntaxHighlighter {
       'list' => ['fg' => '#00ffff'],
       'strong' => ['fg' => '#3d2a00', 'bg' => '#d2bf64'],
       'code' => ['fg' => '#004f6f', 'bg' => '#a8d8e4'],
-      'code-block' => ['fg' => '#003f66', 'bg' => '#b7d7e8'],
+      'link' => ['fg' => '#87d7ff'],
+      'code-block' => ['fg' => '#003f66', 'bg' => '#b7d7e8', 'fillRow' => true],
       'quote' => ['fg' => '#82b4d8'],
     ]);
   }

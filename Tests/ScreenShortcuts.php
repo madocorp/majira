@@ -7,6 +7,7 @@ require_once APP_DIR . '/SPTK/App.php';
 use MAJIRA\App\{Controller, JiraData, Settings};
 use SPTK\App;
 use SPTK\Core\{Style, Window};
+use SPTK\Events\EventContext;
 use SPTK\Layout\Tile;
 use SPTK\Rendering\{Font, Grid, GridWriter};
 use SPTK\SDLWrapper\{SDL, TTF};
@@ -145,6 +146,7 @@ try {
   $window->handleEvent(shortcutKey(ord('r')));
   shortcutCheck($data->ticketLoads === 1, 'Typing R into the active ticket title must not refresh it.');
   $screens['ticket']->release('accept');
+  Controller::expandTicketCard(new EventContext('select', (new ReflectionProperty(Controller::class, 'ticketCardSummaries'))->getValue()['attachments']));
   $attachmentLeaf = current(array_filter($screens['ticket']->layout->leaves(), static fn($leaf) => $leaf->instance() === $screens['ticket']->widget('ticket-attachments')));
   $screens['ticket']->activateLeaf($attachmentLeaf);
   $window->handleEvent(shortcutKey(ord('r')));

@@ -11,6 +11,7 @@ class Client {
     private string $apiToken
   ) {
     $this->site = rtrim($this->site, '/');
+    Adf::setSite($this->site);
   }
 
   /** Returns the authenticated Jira user. */
@@ -263,6 +264,20 @@ class Client {
   public function moveIssuesToSprint(int $sprintId, array $issueKeys): array {
     return $this->request('POST', '/rest/agile/1.0/sprint/' . $sprintId . '/issue', [
       'issues' => array_values(array_map('strval', $issueKeys)),
+    ]);
+  }
+
+  /** Moves issues out of every future and active sprint. */
+  public function moveIssuesToBacklog(array $issueKeys): array {
+    return $this->request('POST', '/rest/agile/1.0/backlog/issue', [
+      'issues' => array_values(array_map('strval', $issueKeys)),
+    ]);
+  }
+
+  /** Sets an issue's estimate in the board's estimation field, which ignores edit screens. */
+  public function setIssueEstimation(string $issueKey, int $boardId, ?string $value): array {
+    return $this->request('PUT', '/rest/agile/1.0/issue/' . rawurlencode($issueKey) . '/estimation?boardId=' . $boardId, [
+      'value' => $value,
     ]);
   }
 

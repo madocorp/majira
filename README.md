@@ -107,10 +107,15 @@ press **Return** to browse, move the cursor into a comment, then press
 asks before removing one you own. **Ctrl+Return** saves a comment edit;
 **Esc** cancels it.
 
-**Return** on an editable property opens an editor in the same tile. Text and
-number values use an input, choices and users use a searchable list, and due
-dates use a calendar. **Return** saves; **Esc** cancels. Jira-managed Created
-and Updated fields cannot be edited. **Return** on a related issue opens it.
+**Return** on an editable property opens an editor in the same tile. Text,
+number, and issue-key values (Parent, Epic Link, Parent Link) use an input;
+an empty key removes the link. Choices and users use a searchable list, and due
+dates use a calendar. **Return** saves; **Esc** cancels. Sprint lists the
+board's open sprints and Backlog; the board's estimation field, such as Story
+Points, can be set even when Jira's edit screen omits it. Both use the Board
+screen board when it belongs to the ticket's project, then the List board, then
+the project's first board. Jira-managed Created and Updated fields cannot be
+edited. **Return** on a related issue opens it.
 
 **Return** on an attachment opens a full-window preview. Images support SPTK
 zoom and pan (**+**, **-**, arrows, and **=** to fit). Text files open read-only;

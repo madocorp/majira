@@ -100,6 +100,9 @@ class JqlBuilder {
     if ($text !== '') {
       $clauses[] = $text;
     }
+    if (($filters['parent'] ?? '') !== '') {
+      $clauses[] = 'parent = ' . $this->jqlString($filters['parent']);
+    }
     $sprint = trim((string)($settings['sprintId'] ?? ''));
     if ($sprint === self::NO_SPRINTS) {
       $clauses[] = 'sprint is EMPTY';
