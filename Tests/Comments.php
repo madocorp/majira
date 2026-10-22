@@ -81,6 +81,16 @@ function commentCheck(bool $condition, string $message): void {
   }
 }
 
+/** Report whether a widget is shown on the screen, not only defined in it. */
+function commentShown(SPTK\Core\Screen $screen, string $id): bool {
+  foreach ($screen->layout->leaves() as $leaf) {
+    if ($leaf->instance()->id() === $id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Build one SDL keydown event. */
 function commentKey(int $key, int $mod = 0): object {
   return (object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => $key, 'mod' => $mod, 'repeat' => false]];
@@ -112,9 +122,8 @@ try {
   (new ReflectionProperty(Controller::class, 'ticketKey'))->setValue(null, 'AP-1');
   (new ReflectionMethod(Controller::class, 'prepareTicketTiles'))->invoke(null);
   (new ReflectionMethod(Controller::class, 'renderTicket'))->invoke(null);
-  $cardSummaries = (new ReflectionProperty(Controller::class, 'ticketCardSummaries'))->getValue();
-  commentCheck(str_starts_with($cardSummaries['comments']->value(), '2 comments by '), 'A closed Comments card should summarize its comments.');
-  Controller::expandTicketCard(new EventContext('select', $cardSummaries['comments']));
+  commentCheck(str_starts_with(Controller::ticketCardSummary('ticket-comments-card'), "Comments\n2 comments by "), 'A closed Comments card should summarize its comments.');
+  $screen->openDeckTile('ticket-comments-card');
   $viewer = $screen->widget('ticket-comments');
   commentCheck($viewer instanceof Text && str_contains($viewer->text(), 'First body'), 'Comments should begin in a read-only Text widget.');
   $originalComments = $viewer->text();
@@ -127,13 +136,13 @@ try {
   $screen->handleEvent(commentKey(SDL::KEY_RETURN));
   commentCheck($screen->activeLeaf()?->instance() === $viewer, 'The first Return should activate the read-only comment cursor.');
   $screen->handleEvent(commentKey(SDL::KEY_SPACE));
-  commentCheck($screen->widget('ticket-comment-editor') === null && $viewer->text() === $originalComments, 'Space should leave the read-only viewer unchanged.');
+  commentCheck(!commentShown($screen, 'ticket-comment-editor') && $viewer->text() === $originalComments, 'Space should leave the read-only viewer unchanged.');
   $screen->handleEvent(commentKey(SDL::KEY_RETURN));
   $editor = $screen->widget('ticket-comment-editor');
-  commentCheck($editor instanceof TextEditor && $editor->getValue() === 'First body', 'Space should edit only the selected comment body.');
+  commentCheck($editor instanceof TextEditor && $editor->getValue() === 'First body' && commentShown($screen, 'ticket-comment-editor') && !commentShown($screen, 'ticket-comments'), 'Return should edit only the selected comment body in place of the viewer.');
   $editor->setValue('Cancelled draft');
   $screen->handleEvent(commentKey(SDL::KEY_ESCAPE));
-  commentCheck($screen->widget('ticket-comments') === $viewer && $client->writes === [], 'Escape should discard the comment draft.');
+  commentCheck(commentShown($screen, 'ticket-comments') && $screen->activeLeaf()?->instance() === $viewer && $client->writes === [], 'Escape should discard the draft and reactivate the viewer.');
   $screen->handleEvent(commentKey(SDL::KEY_INSERT));
   $editor = $screen->widget('ticket-comment-editor');
   commentCheck($editor instanceof TextEditor && $editor->getValue() === '', 'Insert should open a blank comment.');
@@ -153,7 +162,7 @@ try {
   $screen->handleEvent(commentKey(SDL::KEY_RETURN));
   commentCheck($client->writes === ['add', 'update:1', 'delete:1'] && !str_contains($viewer->text(), 'Changed body'), 'Confirming should delete and refresh the comment.');
   $screen->handleEvent(commentKey(SDL::KEY_RETURN));
-  commentCheck($screen->statusBar->kind() === 'error' && $screen->widget('ticket-comment-editor') === null, 'Another author’s comment should not open for editing.');
+  commentCheck($screen->statusBar->kind() === 'error' && !commentShown($screen, 'ticket-comment-editor'), 'Another author’s comment should not open for editing.');
   $screen->handleEvent(commentKey(SDL::KEY_ESCAPE));
   $screen->handleEvent(commentKey(SDL::KEY_DELETE));
   commentCheck($screen->statusBar->kind() === 'error' && !$screen->statusBar->confirming(), 'Another author’s comment should not be offered for deletion.');

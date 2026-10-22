@@ -4,10 +4,10 @@ define('APP_DIR', dirname(__DIR__));
 define('APP_NAMESPACE', 'MAJIRA');
 require_once APP_DIR . '/SPTK/App.php';
 
-use MAJIRA\App\{AttachmentPreview, Controller, JiraData};
+use MAJIRA\App\{AttachmentPreview, Controller, JiraData, Settings};
 use MAJIRA\Jira\Client;
 use SPTK\App;
-use SPTK\Core\{Style, Window};
+use SPTK\Core\{Browser, Style, Window};
 use SPTK\Events\EventContext;
 use SPTK\Layout\Tile;
 use SPTK\Rendering\Font;
@@ -38,6 +38,16 @@ function previewCheck(bool $condition, string $message): void {
   if (!$condition) {
     throw new RuntimeException($message);
   }
+}
+
+/** Report whether a widget is shown on the screen, not only defined in it. */
+function previewShown(SPTK\Core\Screen $screen, string $id): bool {
+  foreach ($screen->layout->leaves() as $leaf) {
+    if ($leaf->instance()->id() === $id) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function previewKey(int $key): object {
@@ -96,6 +106,9 @@ $data = new class($window, $csv, $text, APP_DIR . '/Assets/logo.png') extends Ji
   public function client(): Client {
     return new AttachmentClient($this);
   }
+  public function hasCachedTicket(string $key): bool {
+    return false;
+  }
   public function ticket(string $key, bool $refresh = false): array {
     return ['key' => $key, 'fields' => ['attachment' => $this->remaining]];
   }
@@ -127,7 +140,8 @@ try {
   ]]];
   (new ReflectionProperty(Controller::class, 'ticket'))->setValue(null, $ticketData);
   (new ReflectionMethod(Controller::class, 'renderTicket'))->invoke(null);
-  Controller::expandTicketCard(new EventContext('select', (new ReflectionProperty(Controller::class, 'ticketCardSummaries'))->getValue()['attachments']));
+  $ticket->openDeckTile('ticket-attachments-card');
+  $window->refreshLayout();
   $table = $ticket->widget('ticket-attachments');
   $table->setCursor(0);
   foreach ($ticket->layout->leaves() as $leaf) {
@@ -199,16 +213,16 @@ try {
     return $selector;
   };
   $selector = $openSelector();
-  previewCheck($selector !== null && $ticket->widget('ticket-attachments') === null, 'Insert should replace the attachment table with a file selector.');
+  previewCheck(previewShown($ticket, 'ticket-attachment-file') && !previewShown($ticket, 'ticket-attachments') && $ticket->activeLeaf()?->instance() === $selector, 'Insert should replace the attachment table with an active file selector.');
   $ticket->handleEvent(previewKey(SDL::KEY_ESCAPE));
-  previewCheck($data->uploaded === [] && $ticket->widget('ticket-attachments') === $table, 'Escape should restore the table without uploading.');
+  previewCheck($data->uploaded === [] && previewShown($ticket, 'ticket-attachments') && $ticket->selectedLeaf()?->instance() === $table, 'Escape should restore and select the table without uploading.');
   $selector = $openSelector();
   $selector->setValue($uploadDir . '/sub');
   $ticket->handleEvent(previewKey(SDL::KEY_RETURN));
-  previewCheck($selector->path() === $uploadDir . '/sub' && $ticket->widget('ticket-attachment-file') === $selector, 'Return on a directory should open it.');
+  previewCheck($selector->path() === $uploadDir . '/sub' && previewShown($ticket, 'ticket-attachment-file'), 'Return on a directory should open it.');
   $selector->setValue($uploadDir . '/sub/notes.txt');
   $ticket->handleEvent(previewKey(SDL::KEY_RETURN));
-  previewCheck($data->uploaded === [$uploadDir . '/sub/notes.txt'] && $ticket->widget('ticket-attachments') === $table, 'Return on a file should upload it and restore the table.');
+  previewCheck($data->uploaded === [$uploadDir . '/sub/notes.txt'] && previewShown($ticket, 'ticket-attachments'), 'Return on a file should upload it and restore the table.');
   unlink($uploadDir . '/sub/notes.txt');
   rmdir($uploadDir . '/sub');
   rmdir($uploadDir);
@@ -237,7 +251,8 @@ try {
       }
     }
   };
-  Controller::expandTicketCard(new EventContext('select', (new ReflectionProperty(Controller::class, 'ticketCardSummaries'))->getValue()['comments']));
+  $ticket->openDeckTile('ticket-comments-card');
+  $window->refreshLayout();
   $viewer = $ticket->widget('ticket-comments');
   $activate($viewer);
   $ticket->handleEvent(previewKey(ord('l')));
@@ -248,7 +263,8 @@ try {
   $ticket->handleEvent(previewKey(ord('l')));
   previewCheck($window->currentScreenId() === 'attachment-preview' && $preview->activeLeaf()?->instance() instanceof Image, 'L on a comment token line should preview that attachment.');
   $preview->handleEvent(previewKey(SDL::KEY_ESCAPE));
-  Controller::expandTicketCard(new EventContext('select', (new ReflectionProperty(Controller::class, 'ticketCardSummaries'))->getValue()['description']));
+  $ticket->openDeckTile('ticket-description-card');
+  $window->refreshLayout();
   $description = $ticket->widget('ticket-description');
   $activate($description);
   $ticket->handleEvent(previewKey(SDL::KEY_DOWN));
@@ -258,6 +274,26 @@ try {
   $ticket->handleEvent((object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => ord('l'), 'mod' => SDL::MOD_CTRL, 'repeat' => false]]);
   previewCheck($window->currentScreenId() === 'attachment-preview' && $preview->activeLeaf()?->instance() instanceof Text, 'Ctrl+L on a description token line should preview that attachment.');
   $preview->handleEvent(previewKey(SDL::KEY_ESCAPE));
+  Settings::save(['site' => 'https://example.atlassian.net']);
+  $opened = [];
+  Browser::setOpener(static function(string $url) use (&$opened): void {
+    $opened[] = $url;
+  });
+  $openLineLink = new ReflectionMethod(Controller::class, 'openLineLink');
+  $ticketKey = new ReflectionProperty(Controller::class, 'ticketKey');
+  $line = 'Ünnep [docs](https://example.test/docs) <https://example.atlassian.net/browse/AP-8?focusedCommentId=1> <#AP-7> https://example.test/bare.';
+  $openLineLink->invoke(null, $line, 0);
+  previewCheck($opened === ['https://example.test/docs'], 'A line link should open the first URL when the cursor is before every link.');
+  $openLineLink->invoke(null, $line, mb_strpos($line, 'bare'));
+  previewCheck($opened[1] === 'https://example.test/bare', 'A bare URL under the cursor should open without its trailing dot.');
+  $openLineLink->invoke(null, $line, mb_strpos($line, '<#AP-7>') + 2);
+  previewCheck($ticketKey->getValue() === 'AP-7' && count($opened) === 2, 'A ticket token under the cursor should open in majira.');
+  $openLineLink->invoke(null, $line, mb_strpos($line, 'browse'));
+  previewCheck($ticketKey->getValue() === 'AP-8' && count($opened) === 2, 'A Jira browse URL should open its ticket in majira.');
+  $ticket->statusBar->clear();
+  $openLineLink->invoke(null, 'plain text', 0);
+  previewCheck($ticket->statusBar->kind() === 'error', 'A line without a link should explain itself.');
+  Browser::setOpener(null);
   echo "Attachment preview checks passed.\n";
 } finally {
   $window->close();

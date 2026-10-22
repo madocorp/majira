@@ -6,6 +6,7 @@ use MAJIRA\Jira\Adf;
 use MAJIRA\Highlighting\MarkdownHighlighter;
 use SPTK\App;
 use SPTK\Core\AppData;
+use SPTK\Core\Browser;
 use SPTK\Core\Clipboard;
 use SPTK\Core\Window;
 use SPTK\Core\Style;
@@ -14,7 +15,6 @@ use SPTK\Events\EventContext;
 use SPTK\Events\EventDefinition;
 use SPTK\Layout\{LayoutLeaf, LayoutNode, LayoutSeparator};
 use SPTK\Widgets\DateSelector\DateSelector;
-use SPTK\Widgets\FileSelector\FileSelector;
 use SPTK\Widgets\Button\Button;
 use SPTK\Widgets\Input\Input;
 use SPTK\Widgets\List\ListView;
@@ -62,9 +62,6 @@ class Controller {
   private static string $ticketKey = '';
   private static array $ticketAttachments = [];
   private static array $ticketCommentRanges = [];
-  private static ?LayoutLeaf $commentViewerLeaf = null;
-  private static ?LayoutLeaf $commentEditorLeaf = null;
-  private static ?TextEditor $commentEditor = null;
   private static ?string $commentEditingId = null;
   private static string $commentOriginalBody = '';
   private static bool $commentSaveRequested = false;
@@ -72,19 +69,13 @@ class Controller {
   private static ?string $commentCurrentAccountId = null;
   private static ?LayoutLeaf $attachmentPreviewLeaf = null;
   private static ?int $attachmentPreviewRow = null;
-  private static ?LayoutLeaf $attachmentTableLeaf = null;
-  private static ?LayoutLeaf $attachmentSelectorLeaf = null;
-  private static ?FileSelector $attachmentSelector = null;
   private static ?string $attachmentUploadPath = null;
+  /** <@attachment>, <#KEY>, [label](url), <url>, or a bare http(s) URL. */
+  private const LINE_LINK = '~<@([^<>\n]+)>|<#([A-Z][A-Z0-9_]*-\d+)>|\[[^\]\n]+\]\(((?:https?://|mailto:)[^\s)]+)\)|<((?:https?://|mailto:)[^\s<>]+)>|(https?://[^\s<>()\[\]]+)~u';
   private const TICKET_CARDS = ['description' => 'Description', 'comments' => 'Comments', 'attachments' => 'Attachments', 'related' => 'Related tickets'];
-  private static array $ticketCardSummaries = [];
-  private static array $ticketCardWidgets = [];
-  private static array $ticketExpanded = [];
-  private static array $ticketCompact = [];
+  private static array $ticketCardSummaryValues = [];
   private static array $ticketProperties = [];
   private static array $ticketPropertyNodes = [];
-  private static ?LayoutLeaf $ticketKeyTitleLeaf = null;
-  private static ?LayoutLeaf $ticketKeyEditorLeaf = null;
   private static bool $ticketKeyOpenRequested = false;
   private static ?LayoutNode $ticketPropertyEditorNode = null;
   private static ?LayoutLeaf $ticketPropertyEditorLeaf = null;
@@ -95,19 +86,11 @@ class Controller {
   private static bool $ticketPropertySaveRequested = false;
   private static array $ticketEditMeta = [];
   private static string $ticketEditMetaKey = '';
-  private static ?LayoutNode $settingsLeft = null;
-  private static ?LayoutNode $settingsFieldsPanel = null;
-  private static ?LayoutLeaf $settingsFieldsLeaf = null;
   private static ?ListView $settingsFieldsList = null;
   private static ?array $settingsFieldOptionsDraft = null;
   private static array $settingsSelectedDraft = [];
   private static bool $settingsFieldsOpen = false;
-  private static string $activeTicketCard = 'description';
   private static array $relatedTicketKeys = [];
-  private static ?LayoutNode $ticketPropertiesPane = null;
-  private static ?LayoutNode $ticketHistoryPane = null;
-  private static ?LayoutLeaf $ticketHistoryLeaf = null;
-  private static ?ListView $ticketHistoryList = null;
   private static array $ticketHistoryRows = [];
   private static array $ticketBeforeHistory = [];
   private static string $ticketKeyBeforeHistory = '';
@@ -118,16 +101,12 @@ class Controller {
   private static ?LayoutNode $listSidebar = null;
   private static bool $sidebarOpen = false;
   private static ?string $sidebarSelection = null;
-  private const FILTER_TILES = ['name', 'project', 'board', 'sprint', 'search', 'parent', 'updated', 'created', 'status', 'type', 'priority', 'assignee'];
-  private static array $filterExpanded = [];
-  private static array $filterCompact = [];
+  private const FILTER_TILES = ['project', 'board', 'sprint', 'search', 'parent', 'updated', 'created', 'status', 'type', 'priority', 'assignee'];
+  private static array $filterSummaryValues = [];
   private static array $filterWidgets = [];
-  private static ?LayoutNode $filterTiles = null;
   private static array $dateSlots = [];
-  private static string $activeFilterTile = 'name';
   private static string $editingFilterName = '';
   private static string $editingJqlText = '';
-  private static ?LayoutNode $jqlFilterView = null;
   private static bool $showingJqlFilter = false;
 
   /** Restore cached data after the window opens. */
@@ -1178,21 +1157,9 @@ class Controller {
     }
   }
 
-  /** Create the in-place field selector used by both ticket screens. */
+  /** Find the field selector that settings.xml defines in place of the Settings controls. */
   private static function prepareFieldSettings(): void {
-    $screen = self::$window->screen('settings');
-    self::$settingsLeft = $screen->layout->findNode('settings-left');
-    self::$settingsFieldsList = new ListView([], true, false, true, true, new Style(), 'Fields for List and Ticket');
-    self::$settingsFieldsList->setId('settings-fields-list');
-    self::$settingsFieldsList->setTips('Space moves a field between selected and available groups; Shift+Up/Down reorders; Return saves; Esc cancels.');
-    self::$settingsFieldsLeaf = new LayoutLeaf('List', '1*', '1*', self::$settingsFieldsList, [
-      new EventDefinition('change', null, self::class . '::fieldSelectionChanged'),
-      new EventDefinition('reorder', null, self::class . '::fieldOrderChanged'),
-      new EventDefinition('keyDown', 'enter', self::class . '::saveFieldSettings'),
-      new EventDefinition('keyDown', 'escape', self::class . '::cancelFieldSettings'),
-    ]);
-    self::$settingsFieldsPanel = new LayoutNode('vertical', '48', '1*', id: 'settings-fields-panel');
-    self::$settingsFieldsPanel->addLeaf(self::$settingsFieldsLeaf);
+    self::$settingsFieldsList = self::$window->screen('settings')->widget('settings-fields-list');
   }
 
   /** Load Jira fields and show a selector in place of the Settings controls. */
@@ -1210,11 +1177,8 @@ class Controller {
       }
     }
     self::populateFieldSettings(FieldConfiguration::selected($settings), $settings);
-    $screen = self::$window->screen('settings');
-    $screen->layout->replaceChild(self::$settingsLeft, self::$settingsFieldsPanel);
     self::$settingsFieldsOpen = true;
-    $screen->setLayout($screen->layout);
-    $screen->activateLeaf(self::$settingsFieldsLeaf);
+    self::$window->screen('settings')->show('settings-fields-list');
     self::$window->refreshLayout();
   }
 
@@ -1359,18 +1323,12 @@ class Controller {
 
   /** Restore the Settings parent tile and remeasure its compact layout. */
   private static function closeFieldSettings(): void {
-    $screen = self::$window->screen('settings');
     self::$settingsFieldsOpen = false;
     self::$settingsFieldOptionsDraft = null;
     self::$settingsSelectedDraft = [];
-    $screen->layout->replaceChild(self::$settingsFieldsPanel, self::$settingsLeft);
-    $screen->setLayout($screen->layout);
-    foreach (self::$settingsLeft->leaves() as $leaf) {
-      if ($leaf->instance()->id() === 'settings-fields') {
-        $screen->selectLeaf($leaf);
-        break;
-      }
-    }
+    $screen = self::$window->screen('settings');
+    $screen->restore('settings-fields-list');
+    $screen->selectLeaf(self::shownLeaf('settings', 'settings-fields'));
     self::$window->refreshLayout();
   }
 
@@ -1639,8 +1597,7 @@ class Controller {
     self::renderFilters();
     self::input('filters', 'custom-name')->setValue('new', true);
     self::input('list', 'jql')->setValue('');
-    self::openFilterTile('name', false);
-    self::$window->screen('filters')->activateLeaf(self::expandedFilterLeaf('name'));
+    self::$window->screen('filters')->activateLeaf(self::shownLeaf('filters', 'custom-name'));
     self::backgroundStatus('New filter added.');
     self::$window->refreshLayout();
   }
@@ -1680,7 +1637,6 @@ class Controller {
     self::renderNavigation();
     self::$editingFilterName = $name;
     self::renderFilters($renderSaved);
-    self::openFilterTile('name', false);
     self::input('filters', 'custom-name')->setValue($name);
     self::input('list', 'jql')->setValue($row['jql']);
   }
@@ -1778,7 +1734,6 @@ class Controller {
       self::$editingFilterName = '';
       self::renderNavigation();
       self::renderFilters();
-      self::openFilterTile('name', false);
       self::input('list', 'jql')->setValue('');
     }
     self::backgroundStatus('Deleted filter: ' . $name);
@@ -2189,31 +2144,16 @@ class Controller {
       return false;
     }
     $screen = self::$window->screen('ticket');
-    $card = $screen->layout->findNode('ticket-attachments-card');
-    self::$attachmentTableLeaf = $card->leaves()[0];
-    if (self::$attachmentSelector === null) {
-      self::$attachmentSelector = new FileSelector((string)(getenv('HOME') ?: '.'));
-      self::$attachmentSelector->setId('ticket-attachment-file');
-      self::$attachmentSelector->setTips('Return opens a directory or uploads a file; Esc cancels.');
-      self::$attachmentSelectorLeaf = new LayoutLeaf('FileSelector', '1*', '1*', self::$attachmentSelector, [
-        new EventDefinition('keyDown', 'enter', self::class . '::acceptAttachmentFile'),
-        new EventDefinition('deactivate', null, self::class . '::finishAttachmentSelect'),
-      ]);
-    } else {
-      self::$attachmentSelector->reload();
-    }
+    $screen->widget('ticket-attachment-file')->reload();
     self::$attachmentUploadPath = null;
-    $screen->release();
-    $card->replaceChild(self::$attachmentTableLeaf, self::$attachmentSelectorLeaf);
-    $screen->setLayout($screen->layout);
-    $screen->activateLeaf(self::$attachmentSelectorLeaf);
+    $screen->show('ticket-attachment-file');
     self::$window->refreshLayout();
     return true;
   }
 
   /** Mark a file for upload; directories are left to the browser. */
   public static function acceptAttachmentFile(EventContext $event): bool {
-    $path = self::$attachmentSelector?->activeValue();
+    $path = $event->widget->activeValue();
     if ($path === null || !is_file($path)) {
       return false;
     }
@@ -2222,16 +2162,8 @@ class Controller {
     return true;
   }
 
-  /** Restore the attachment table and upload the chosen file, if any. */
+  /** Upload the chosen file, if any, after the attachment table is back. */
   public static function finishAttachmentSelect(EventContext $event): void {
-    if (self::$attachmentTableLeaf === null) {
-      return;
-    }
-    $screen = self::$window->screen('ticket');
-    $screen->layout->findNode('ticket-attachments-card')->replaceChild(self::$attachmentSelectorLeaf, self::$attachmentTableLeaf);
-    $screen->setLayout($screen->layout);
-    $screen->selectLeaf(self::$attachmentTableLeaf);
-    self::$attachmentTableLeaf = null;
     self::$window->refreshLayout();
     $path = self::$attachmentUploadPath;
     self::$attachmentUploadPath = null;
@@ -2246,27 +2178,69 @@ class Controller {
     });
   }
 
-  /** Preview the attachment on the comment line under the read cursor. */
-  public static function openCommentAttachment(EventContext $event): bool {
+  /** Open the link on the comment line under the read cursor. */
+  public static function openCommentLink(EventContext $event): bool {
     if (!self::commentViewerSelected($event) || self::$window->screen('ticket')->activeLeaf()?->instance() !== $event->widget) {
       return false;
     }
-    [$row] = $event->widget->cursorPosition();
-    self::openLinkedAttachment(explode("\n", $event->widget->text())[$row] ?? '');
+    [$row, $column] = $event->widget->cursorPosition();
+    self::openLineLink(explode("\n", $event->widget->text())[$row] ?? '', $column);
     return true;
   }
 
-  /** Preview the attachment on the description line under the cursor. */
-  public static function openDescriptionAttachment(EventContext $event): bool {
+  /** Open the link on the description line under the cursor. */
+  public static function openDescriptionLink(EventContext $event): bool {
     if (!$event->widget instanceof TextEditor || $event->widget->id() !== 'ticket-description' || self::$ticketKey === '') {
       return false;
     }
-    [$row] = $event->widget->cursorPosition();
-    self::openLinkedAttachment(explode("\n", $event->widget->getValue())[$row] ?? '');
+    [$row, $column] = $event->widget->cursorPosition();
+    self::openLineLink(explode("\n", $event->widget->getValue())[$row] ?? '', $column);
     return true;
   }
 
-  /** Open the preview for a line's attachment token, or explain why not. */
+  /** Open the link under the cursor, or the first link of the line. */
+  private static function openLineLink(string $line, int $column): void {
+    preg_match_all(self::LINE_LINK, $line, $links, PREG_SET_ORDER | PREG_OFFSET_CAPTURE | PREG_UNMATCHED_AS_NULL);
+    if ($links === []) {
+      self::status('No link on this line.', true);
+      return;
+    }
+    preg_match_all('/\X/u', $line, $graphemes);
+    $offset = strlen(implode('', array_slice($graphemes[0], 0, $column)));
+    $link = $links[0];
+    foreach ($links as $candidate) {
+      if ($offset >= $candidate[0][1] && $offset < $candidate[0][1] + strlen($candidate[0][0])) {
+        $link = $candidate;
+        break;
+      }
+    }
+    if (($link[1][0] ?? null) !== null) {
+      self::openLinkedAttachment($link[0][0]);
+      return;
+    }
+    // A bare URL usually ends before the sentence punctuation.
+    $url = $link[3][0] ?? $link[4][0] ?? rtrim((string)($link[5][0] ?? ''), '.,;:!?');
+    $key = $link[2][0] ?? self::ticketKeyFromUrl($url);
+    if ($key !== null) {
+      self::openTicket($key);
+      return;
+    }
+    try {
+      Browser::open($url);
+      self::backgroundStatus('Opened ' . $url);
+    } catch (\RuntimeException $exception) {
+      self::status($exception->getMessage(), true);
+    }
+  }
+
+  /** Return the ticket key of a Jira browse URL on the configured site. */
+  private static function ticketKeyFromUrl(string $url): ?string {
+    $site = rtrim((string)(Settings::load()['site'] ?? ''), '/');
+    $pattern = '~^' . preg_quote($site, '~') . '/browse/([A-Z][A-Z0-9_]*-\d+)(?:[/?#].*)?$~';
+    return $site !== '' && preg_match($pattern, $url, $match) === 1 ? $match[1] : null;
+  }
+
+  /** Open the preview for an attachment token, or explain why not. */
   private static function openLinkedAttachment(string $line): void {
     $attachment = self::media()->linked($line);
     $ids = array_map(static fn(array $item): string => (string)($item['id'] ?? ''), self::$ticketAttachments);
@@ -2280,7 +2254,7 @@ class Controller {
 
   /** Mark Ctrl+Return as a save and keep empty drafts open. */
   public static function requestCommentSave(EventContext $event): bool {
-    $body = self::$commentEditor?->getValue() ?? '';
+    $body = self::editor('ticket', 'ticket-comment-editor')->getValue();
     if (trim($body) === '') {
       self::status('Comment cannot be empty.', true);
       return true;
@@ -2300,16 +2274,12 @@ class Controller {
       return;
     }
     $id = self::$commentEditingId;
-    $body = self::$commentEditor->getValue();
+    $body = self::editor('ticket', 'ticket-comment-editor')->getValue();
     $save = self::$commentSaveRequested && ($id === '' || $body !== self::$commentOriginalBody);
     self::$commentEditingId = null;
     self::$commentOriginalBody = '';
     self::$commentSaveRequested = false;
-    $screen = self::$window->screen('ticket');
-    $card = $screen->layout->findNode('ticket-comments-card');
-    $card->replaceChild(self::$commentEditorLeaf, self::$commentViewerLeaf);
-    $screen->setLayout($screen->layout);
-    $screen->activateLeaf(self::$commentViewerLeaf);
+    self::$window->screen('ticket')->activateLeaf(self::shownLeaf('ticket', 'ticket-comments'));
     if (!$save) {
       return;
     }
@@ -2380,12 +2350,10 @@ class Controller {
     self::$commentEditingId = $id;
     self::$commentOriginalBody = $body;
     self::$commentSaveRequested = false;
-    self::$commentEditor->setTitle($id === '' ? 'New comment' : 'Edit comment');
-    self::$commentEditor->setValue($body);
-    $card = $screen->layout->findNode('ticket-comments-card');
-    $card->replaceChild(self::$commentViewerLeaf, self::$commentEditorLeaf);
-    $screen->setLayout($screen->layout);
-    $screen->activateLeaf(self::$commentEditorLeaf);
+    $editor = self::editor('ticket', 'ticket-comment-editor');
+    $editor->setTitle($id === '' ? 'New comment' : 'Edit comment');
+    $editor->setValue($body);
+    $screen->show('ticket-comment-editor');
     self::$window->refreshLayout();
   }
 
@@ -2413,21 +2381,12 @@ class Controller {
 
   /** Turn the ticket key title into an input where another key can be typed. */
   public static function editTicketKey(EventContext $event): bool {
-    if (!$event->widget instanceof Title || $event->widget->id() !== 'ticket-key' || self::$ticketKeyEditorLeaf !== null) {
+    if (!$event->widget instanceof Title || $event->widget->id() !== 'ticket-key') {
       return false;
     }
-    $input = new Input(self::$ticketKey, new Style());
-    $input->setId('ticket-key-editor');
-    $input->setTips('Type a ticket key; Return opens it, Esc cancels.');
+    self::input('ticket', 'ticket-key-editor')->setValue(self::$ticketKey);
     self::$ticketKeyOpenRequested = false;
-    self::$ticketKeyEditorLeaf = new LayoutLeaf('Input', '1*', '1', $input, [
-      new EventDefinition('keyDown', 'enter', self::class . '::requestTicketKeyOpen'),
-      new EventDefinition('deactivate', null, self::class . '::finishTicketKeyEdit'),
-    ]);
-    $screen = self::$window->screen('ticket');
-    $screen->layout->findNode('ticket-right')->replaceChild(self::ticketKeyLeaf(), self::$ticketKeyEditorLeaf);
-    $screen->setLayout($screen->layout);
-    $screen->activateLeaf(self::$ticketKeyEditorLeaf);
+    self::$window->screen('ticket')->show('ticket-key-editor');
     self::$window->refreshLayout();
     return true;
   }
@@ -2449,19 +2408,9 @@ class Controller {
     return false;
   }
 
-  /** Restore the key title, then open the typed ticket after Return. */
+  /** Open the typed ticket after Return, once the key title is back. */
   public static function finishTicketKeyEdit(EventContext $event): void {
-    $leaf = self::$ticketKeyEditorLeaf;
-    if ($leaf === null) {
-      return;
-    }
-    self::$ticketKeyEditorLeaf = null;
-    $key = strtoupper(trim($leaf->instance()->getValue()));
-    $screen = self::$window->screen('ticket');
-    $titleLeaf = self::ticketKeyLeaf();
-    $screen->layout->findNode('ticket-right')->replaceChild($leaf, $titleLeaf);
-    $screen->setLayout($screen->layout);
-    $screen->selectLeaf($titleLeaf);
+    $key = strtoupper(trim($event->widget->getValue()));
     self::$window->refreshLayout();
     if (!self::$ticketKeyOpenRequested || $key === '' || $key === self::$ticketKey) {
       return;
@@ -2471,19 +2420,6 @@ class Controller {
       return;
     }
     self::openTicket($key);
-  }
-
-  /** Find the layout leaf that holds the ticket key title. */
-  private static function ticketKeyLeaf(): LayoutLeaf {
-    if (self::$ticketKeyTitleLeaf === null) {
-      $title = self::title('ticket', 'ticket-key');
-      foreach (self::$window->screen('ticket')->layout->findNode('ticket-right')->leaves() as $leaf) {
-        if ($leaf->instance() === $title) {
-          self::$ticketKeyTitleLeaf = $leaf;
-        }
-      }
-    }
-    return self::$ticketKeyTitleLeaf;
   }
 
   /** Open the related issue selected in the ticket card. */
@@ -2764,68 +2700,20 @@ class Controller {
       return;
     }
     $screen = self::$window->screen('filters');
-    $middle = $screen->layout->findNode('filter-middle');
-    $tiles = self::$filterTiles;
-    if (!$middle->replaceChild($jql ? $tiles : self::$jqlFilterView, $jql ? self::$jqlFilterView : $tiles)) {
-      throw new \LogicException('Filter mode layout is missing.');
-    }
+    $jql ? $screen->show('filter-jql-mode', false) : $screen->restore('filter-jql-mode');
     self::$showingJqlFilter = $jql;
-    $screen->setLayout($screen->layout);
     self::$window->refreshLayout();
   }
 
-  /** Keep one full-height filter tile and two-line summaries for the others. */
+  /** Put an empty placeholder in each date slot; the deck itself comes from filters.xml. */
   private static function prepareFilterTiles(): void {
     $screen = self::$window->screen('filters');
-    $column = $screen->layout->findNode('filter-tiles');
-    if ($column === null) {
-      throw new \LogicException('Filter tile column is missing.');
-    }
-    self::$filterTiles = $column;
-    $nameNode = $column->findNode('filter-name');
-    $nameInput = $nameNode === null ? null : $nameNode->leaves()[0]->instance();
-    if (!$nameInput instanceof Input) {
-      throw new \LogicException('Filter name input is missing.');
-    }
-    $editor = new TextEditor('', new Style(), true, 8, null, 'JQL');
-    $editor->setId('filter-jql');
-    self::$filterWidgets['filter-jql'] = $editor;
-    self::$jqlFilterView = new LayoutNode('vertical', '1*', '1*', id: 'filter-jql-mode');
-    // Both views use the same input, so an in-progress name survives mode changes.
-    self::$jqlFilterView->addLeaf(new LayoutLeaf('Input', '1*', 'auto', $nameInput, [
-      new EventDefinition('deactivate', null, self::class . '::renameCustomFilter'),
-    ]));
-    self::$jqlFilterView->addSeparator(new LayoutSeparator());
-    self::$jqlFilterView->addLeaf(new LayoutLeaf('TextEditor', '1*', '1*', $editor, [
-      new EventDefinition('keyUp', null, self::class . '::saveEditedFilterJql'),
-      new EventDefinition('deactivate', null, self::class . '::saveEditedFilterJql'),
-    ]));
-    foreach (self::FILTER_TILES as $key) {
-      $node = $column->findNode('filter-' . $key);
-      if ($node === null) {
-        throw new \LogicException('Filter tile is missing: ' . $key);
-      }
-      self::$filterExpanded[$key] = $node;
-      foreach ($node->leaves() as $leaf) {
-        $id = $leaf->instance()->id();
-        if ($id !== null) {
-          self::$filterWidgets[$id] = $leaf->instance();
-        }
-      }
-      $summary = new FilterSummary($key === 'name' ? 'Filter name' : ucfirst($key));
-      $summary->setId('filter-summary-' . $key);
-      $compact = new LayoutLeaf('FilterSummary', '1*', '2', $summary, [
-        new EventDefinition('select', null, self::class . '::expandFilterTile'),
-      ]);
-      self::$filterCompact[$key] = $compact;
-      if ($key !== self::$activeFilterTile) {
-        $column->replaceChild($node, $compact);
-      }
-    }
     foreach (['updated', 'created'] as $field) {
       foreach (['from' => $field . '-date', 'to' => $field . '-to-date'] as $bound => $id) {
-        $slot = self::$filterExpanded[$field]->findNode($field . '-' . $bound . '-slot');
+        $slot = $screen->layout->findNode($field . '-' . $bound . '-slot');
         $date = $slot->leaves()[0];
+        // Disabled calendars are outside the layout, so keep them reachable by id.
+        self::$filterWidgets[$id] = $date->instance();
         $placeholder = new FilterSummary(ucfirst($bound));
         $placeholder->setId('date-placeholder-' . $field . '-' . $bound);
         $placeholder->setValue('Enter to add date');
@@ -2884,45 +2772,27 @@ class Controller {
     $next = $slot[$enabled ? 'date' : 'empty'];
     $slot['slot']->replaceChild($previous, $next);
     $slot['enabled'] = $enabled;
-    if (self::$activeFilterTile === $field) {
-      $screen = self::$window->screen('filters');
-      $screen->setLayout($screen->layout);
-      if ($focus) {
-        if ($enabled) {
-          $screen->activateLeaf($next);
-        } else {
-          $screen->selectLeaf($next);
-        }
-      }
-      self::$window->refreshLayout();
-    }
-  }
-
-  /** Expand the summary reached with an arrow key. */
-  public static function expandFilterTile(EventContext $event): void {
-    $id = $event->widget?->id() ?? '';
-    $key = str_starts_with($id, 'filter-summary-') ? substr($id, strlen('filter-summary-')) : '';
-    self::openFilterTile($key, true);
-  }
-
-  /** Open one card, keeping list focus when a saved filter changes. */
-  private static function openFilterTile(string $key, bool $focus): bool {
-    if (self::$showingJqlFilter || !isset(self::$filterExpanded[$key]) || $key === self::$activeFilterTile) {
-      return false;
-    }
-    $previous = self::$activeFilterTile;
     $screen = self::$window->screen('filters');
-    $column = $screen->layout->findNode('filter-tiles');
-    $column->replaceChild(self::$filterExpanded[$previous], self::$filterCompact[$previous]);
-    $column->replaceChild(self::$filterCompact[$key], self::$filterExpanded[$key]);
-    self::$activeFilterTile = $key;
     $screen->setLayout($screen->layout);
     if ($focus) {
-      $screen->selectLeaf(self::expandedFilterLeaf($key));
+      if ($enabled) {
+        $screen->activateLeaf($next);
+      } else {
+        $screen->selectLeaf($next);
+      }
     }
-    self::refreshFilterSummaries();
     self::$window->refreshLayout();
-    return true;
+  }
+
+  /** Paint a closed filter tile as its name and current choice. */
+  public static function filterSummary(?string $id): string {
+    $key = substr((string)$id, strlen('filter-'));
+    return ucfirst($key) . "\n" . (self::$filterSummaryValues[$key] ?? '-');
+  }
+
+  /** Update the summaries when a filter tile closes, so it shows the latest choice. */
+  public static function filterTileClosed(EventContext $event): void {
+    self::refreshFilterSummaries();
   }
 
   /** Right from saved filters enters the currently open filter tile. */
@@ -2945,25 +2815,39 @@ class Controller {
     return false;
   }
 
-  /** Select the expanded widget while leaving it ready for Return. */
+  /** Select the open filter tile, or the JQL editor, while leaving it ready for Return. */
   private static function focusExpandedFilter(): bool {
     $screen = self::$window->screen('filters');
-    $screen->selectLeaf(self::$showingJqlFilter ? self::$jqlFilterView->leaves()[1] : self::expandedFilterLeaf(self::$activeFilterTile));
-    return true;
+    if (self::$showingJqlFilter) {
+      return $screen->selectLeaf(self::shownLeaf('filters', 'filter-jql'));
+    }
+    foreach (self::FILTER_TILES as $key) {
+      $tile = $screen->layout->findNode('filter-' . $key);
+      if ($tile->isDeckOpen()) {
+        $screen->selectLeaf($tile->leaves()[0]);
+        return true;
+      }
+    }
+    return false;
   }
 
-  private static function expandedFilterLeaf(string $key): LayoutLeaf {
-    return self::$filterExpanded[$key]->leaves()[0];
+  /** Find the shown leaf of a widget by XML id. */
+  private static function shownLeaf(string $screen, string $id): LayoutLeaf {
+    foreach (self::$window->screen($screen)->layout->leaves() as $leaf) {
+      if ($leaf->instance()->id() === $id) {
+        return $leaf;
+      }
+    }
+    throw new \LogicException('Widget is not shown: ' . $id);
   }
 
-  /** Show each filter's current choice beneath its name while collapsed. */
+  /** Cache each filter's current choice for its closed deck tile. */
   private static function refreshFilterSummaries(): void {
-    if (self::$filterCompact === []) {
+    if (self::$dateSlots === []) {
       return;
     }
     $settings = Settings::load();
     $values = [
-      'name' => self::input('filters', 'custom-name')->getValue(),
       'project' => (string)($settings['projectKey'] ?? ''),
       'board' => self::selectedFilterLabel('boards', (string)($settings['boardId'] ?? '')),
       'sprint' => self::selectedFilterLabel('sprints', (string)($settings['sprintId'] ?? '')),
@@ -2983,7 +2867,7 @@ class Controller {
     }
     foreach (self::FILTER_TILES as $key) {
       $value = trim((string)($values[$key] ?? ''));
-      self::$filterCompact[$key]->instance()->setValue($value !== '' ? $value : '-');
+      self::$filterSummaryValues[$key] = $value !== '' ? $value : '-';
     }
   }
 
@@ -3095,56 +2979,16 @@ class Controller {
     $markdown = new MarkdownHighlighter();
     self::editor('ticket', 'ticket-description')->setHighlighter($markdown);
     self::text('ticket', 'ticket-comments')->setHighlighter($markdown);
-    self::$commentViewerLeaf = $screen->layout->findNode('ticket-comments-card')->leaves()[0];
-    self::$commentEditor = new TextEditor('', new Style(), true, title: 'Comment');
-    self::$commentEditor->setId('ticket-comment-editor');
-    self::$commentEditor->setTips('Esc cancels; Ctrl+Return saves the comment.');
-    self::$commentEditor->setHighlighter($markdown);
-    self::$commentEditorLeaf = new LayoutLeaf('TextEditor', '1*', '1*', self::$commentEditor, [
-      new EventDefinition('select', null, self::class . '::expandTicketCard'),
-      new EventDefinition('keyDown', 'escape', self::class . '::cancelCommentEdit'),
-      new EventDefinition('keyDown', 'ctrl+enter', self::class . '::requestCommentSave'),
-      new EventDefinition('deactivate', null, self::class . '::finishCommentEdit'),
-    ]);
-    $deck = $screen->layout->findNode('ticket-deck');
-    foreach (self::TICKET_CARDS as $key => $title) {
-      $node = $deck->findNode('ticket-' . $key . '-card');
-      foreach ($node->leaves() as $leaf) {
-        self::$ticketCardWidgets[$leaf->instance()->id()] = $leaf->instance();
-      }
-      $expanded = new LayoutNode('vertical', '1*', '1*', id: 'ticket-open-' . $key);
-      $expanded->addNode($node);
-      $summary = new FilterSummary($title);
-      $summary->setId('ticket-card-' . $key);
-      self::$ticketCardSummaries[$key] = $summary;
-      $compact = new LayoutNode('vertical', '1*', '2', id: 'ticket-closed-' . $key);
-      $compact->addLeaf(new LayoutLeaf('FilterSummary', '1*', '2', $summary, [
-        new EventDefinition('select', null, self::class . '::expandTicketCard'),
-      ]));
-      $deck->replaceChild($node, $key === self::$activeTicketCard ? $expanded : $compact);
-      self::$ticketExpanded[$key] = $expanded;
-      self::$ticketCompact[$key] = $compact;
-    }
-    self::$ticketPropertiesPane = $screen->layout->findNode('ticket-properties-pane');
+    self::editor('ticket', 'ticket-comment-editor')->setHighlighter($markdown);
+    $screen->widget('ticket-attachment-file')->setPath((string)(getenv('HOME') ?: '.'));
     self::configureTicketPropertyTiles();
-    self::$ticketHistoryList = new ListView([], false, false, false, false, new Style(), 'History');
-    self::$ticketHistoryList->setId('ticket-history');
-    self::$ticketHistoryList->setTips('Up/Down previews tickets; Return opens one; Esc closes History.');
-    self::$ticketHistoryLeaf = new LayoutLeaf('List', '1*', '1*', self::$ticketHistoryList, [
-      new EventDefinition('change', null, self::class . '::previewTicketHistory'),
-      new EventDefinition('keyDown', 'enter', self::class . '::acceptTicketHistory'),
-      new EventDefinition('keyDown', 'escape', self::class . '::cancelTicketHistory'),
-      new EventDefinition('deactivate', null, self::class . '::cancelTicketHistory'),
-    ]);
-    self::$ticketHistoryPane = new LayoutNode('vertical', '1*', '1*', id: 'ticket-history-pane');
-    self::$ticketHistoryPane->addLeaf(self::$ticketHistoryLeaf);
     $screen->setLayout($screen->layout);
     self::$window->refreshLayout();
   }
 
   /** Build property cards in the order shared with the ticket list. */
   private static function configureTicketPropertyTiles(): void {
-    $pane = self::$ticketPropertiesPane ?? self::$window->screen('ticket')->layout->findNode('ticket-properties-pane');
+    $pane = self::$window->screen('ticket')->layout->findNode('ticket-properties-pane');
     $old = $pane->findNode('ticket-properties');
     $properties = new LayoutNode('vertical', '1*', 'auto', id: 'ticket-properties');
     self::$ticketProperties = [];
@@ -3168,36 +3012,31 @@ class Controller {
     self::$window->screen('ticket')->setLayout(self::$window->screen('ticket')->layout);
   }
 
-  /** Expand the closed ticket card reached with an arrow key. */
-  public static function expandTicketCard(EventContext $event): void {
-    $id = $event->widget?->id() ?? '';
-    $key = str_starts_with($id, 'ticket-card-') ? substr($id, 12) : '';
-    if (!isset(self::$ticketExpanded[$key]) || $key === self::$activeTicketCard) {
-      return;
-    }
-    $screen = self::$window->screen('ticket');
-    $deck = $screen->layout->findNode('ticket-deck');
-    $deck->replaceChild(self::$ticketExpanded[self::$activeTicketCard], self::$ticketCompact[self::$activeTicketCard]);
-    $deck->replaceChild(self::$ticketCompact[$key], self::$ticketExpanded[$key]);
-    self::$activeTicketCard = $key;
-    $screen->setLayout($screen->layout);
-    $screen->selectLeaf(self::$ticketExpanded[$key]->leaves()[0]);
-    self::$window->refreshLayout();
+  /** Paint a closed ticket card as its title and a one-line summary. */
+  public static function ticketCardSummary(?string $id): string {
+    $key = preg_replace('/^ticket-(.*)-card$/', '$1', (string)$id);
+    return (self::TICKET_CARDS[$key] ?? '') . "\n" . (self::$ticketCardSummaryValues[$key] ?? '');
+  }
+
+  /** Name embedded files once Description or Comments opens. */
+  public static function ticketCardOpened(EventContext $event): void {
     self::resolveTicketMedia();
   }
 
   /** Open Description when a ticket loads, regardless of the previous card. */
   private static function resetTicketDeck(): void {
-    if (self::$activeTicketCard === 'description') {
-      return;
+    self::$window->screen('ticket')->openDeckTile('ticket-description-card');
+  }
+
+  /** Return the key of the open ticket card. */
+  private static function openTicketCard(): string {
+    $layout = self::$window->screen('ticket')->layout;
+    foreach (array_keys(self::TICKET_CARDS) as $key) {
+      if ($layout->findNode('ticket-' . $key . '-card')->isDeckOpen()) {
+        return $key;
+      }
     }
-    $screen = self::$window->screen('ticket');
-    $deck = $screen->layout->findNode('ticket-deck');
-    $deck->replaceChild(self::$ticketExpanded[self::$activeTicketCard], self::$ticketCompact[self::$activeTicketCard]);
-    $deck->replaceChild(self::$ticketCompact['description'], self::$ticketExpanded['description']);
-    self::$activeTicketCard = 'description';
-    $screen->setLayout($screen->layout);
-    self::resolveTicketMedia();
+    return 'description';
   }
 
   /** Replace the property cards with the most recently opened tickets. */
@@ -3215,18 +3054,14 @@ class Controller {
       self::$ticketHistoryRows[$key] = $row;
       $items[] = ['value' => $key, 'label' => '#' . $key . ($row['title'] === '' ? '' : ' ' . $row['title'])];
     }
-    self::$ticketHistoryList->setItems($items);
+    $list = self::list('ticket', 'ticket-history');
+    $list->setItems($items);
     if (isset(self::$ticketHistoryRows[self::$ticketKey])) {
-      self::$ticketHistoryList->setValue(self::$ticketKey);
+      $list->setValue(self::$ticketKey);
     }
     self::resetTicketDeck();
-    $screen = self::$window->screen('ticket');
-    if (!$screen->layout->replaceChild(self::$ticketPropertiesPane, self::$ticketHistoryPane)) {
-      throw new \LogicException('Ticket property pane is missing.');
-    }
     self::$ticketHistoryOpen = true;
-    $screen->setLayout($screen->layout);
-    $screen->activateLeaf(self::$ticketHistoryLeaf);
+    self::$window->screen('ticket')->show('ticket-history');
     self::previewTicketHistory($event);
     self::$window->refreshLayout();
   }
@@ -3236,7 +3071,7 @@ class Controller {
     if (!self::$ticketHistoryOpen) {
       return;
     }
-    $key = self::$ticketHistoryList->getValue();
+    $key = self::list('ticket', 'ticket-history')->getValue();
     if (!is_string($key) || $key === '') {
       return;
     }
@@ -3255,7 +3090,7 @@ class Controller {
     if (!self::$ticketHistoryOpen) {
       return false;
     }
-    $key = self::$ticketHistoryList->getValue();
+    $key = self::list('ticket', 'ticket-history')->getValue();
     self::cancelTicketHistory($event);
     if (is_string($key) && $key !== '') {
       self::openTicket($key);
@@ -3270,44 +3105,34 @@ class Controller {
     }
     self::$ticketHistoryOpen = false;
     $screen = self::$window->screen('ticket');
+    // Releasing the list puts the property cards back; restore covers a list that is not active.
     $screen->release('cancel');
+    $screen->restore('ticket-history');
     self::$ticket = self::$ticketBeforeHistory;
     self::$ticketKey = self::$ticketKeyBeforeHistory;
     self::renderTicket();
-    if (!$screen->layout->replaceChild(self::$ticketHistoryPane, self::$ticketPropertiesPane)) {
-      throw new \LogicException('Ticket history pane is missing.');
-    }
-    $screen->setLayout($screen->layout);
-    foreach ($screen->layout->leaves() as $leaf) {
-      if ($leaf->instance()->id() === 'ticket-history-button') {
-        $screen->selectLeaf($leaf);
-        break;
-      }
-    }
+    $screen->selectLeaf(self::shownLeaf('ticket', 'ticket-history-button'));
     self::$window->refreshLayout();
     return true;
   }
 
   /** Fill the one-line summaries shown on closed ticket cards. */
   private static function renderTicketCardSummaries(array $fields): void {
-    if (self::$ticketCardSummaries === []) {
-      return;
-    }
     $description = trim(self::media()->toText($fields['description'] ?? null));
     $lines = $description === '' ? 0 : substr_count($description, "\n") + 1;
-    self::$ticketCardSummaries['description']->setValue($lines === 0 ? 'No description' : self::plural($lines, 'line'));
+    self::$ticketCardSummaryValues['description'] = $lines === 0 ? 'No description' : self::plural($lines, 'line');
     $comments = array_filter($fields['comment']['comments'] ?? [], 'is_array');
     $total = (int)($fields['comment']['total'] ?? count($comments));
     $authors = array_values(array_unique(array_map(fn(array $comment): string => (string)($comment['author']['displayName'] ?? 'Unknown'), $comments)));
     $by = count($authors) > 3 ? implode(', ', array_slice($authors, 0, 3)) . ' and others' : implode(', ', $authors);
-    self::$ticketCardSummaries['comments']->setValue($total === 0 ? 'No comments' : self::plural($total, 'comment') . ' by ' . $by);
+    self::$ticketCardSummaryValues['comments'] = $total === 0 ? 'No comments' : self::plural($total, 'comment') . ' by ' . $by;
     $files = array_map(fn(array $attachment): string => (string)($attachment['filename'] ?? ''), self::$ticketAttachments);
-    self::$ticketCardSummaries['attachments']->setValue($files === [] ? 'No attachments' : self::plural(count($files), 'attachment') . ': ' . self::firstThree($files));
+    self::$ticketCardSummaryValues['attachments'] = $files === [] ? 'No attachments' : self::plural(count($files), 'attachment') . ': ' . self::firstThree($files);
     $related = self::$relatedTicketKeys === [] ? 'No related tickets' : self::plural(count(self::$relatedTicketKeys), 'related ticket') . ': ' . self::firstThree(self::$relatedTicketKeys);
     if (self::$ticketKey !== '' && self::$data->cachedChildren(self::$ticketKey) === null) {
       $related .= '; children not loaded yet (Return loads them)';
     }
-    self::$ticketCardSummaries['related']->setValue($related);
+    self::$ticketCardSummaryValues['related'] = $related;
   }
 
   /** Format a count with a singular or plural noun. */
@@ -3322,13 +3147,14 @@ class Controller {
 
   /** Name embedded files in the open Description or Comments card; unknown ids cost one lookup per attachment. */
   private static function resolveTicketMedia(): void {
-    if (self::$ticketKey === '' || !in_array(self::$activeTicketCard, ['description', 'comments'], true)) {
+    $card = self::openTicketCard();
+    if (self::$ticketKey === '' || !in_array($card, ['description', 'comments'], true)) {
       return;
     }
     $fields = is_array(self::$ticket['fields'] ?? null) ? self::$ticket['fields'] : [];
     $media = self::media();
     $text = $media->toText($fields['description'] ?? null);
-    if (self::$activeTicketCard === 'comments') {
+    if ($card === 'comments') {
       $text = '';
       foreach ((array)($fields['comment']['comments'] ?? []) as $comment) {
         $text .= $media->toText($comment['body'] ?? null) . "\n";
@@ -3350,7 +3176,7 @@ class Controller {
   /** Show fields, comments, attachments, and related issues of the current ticket. */
   private static function renderTicket(): void {
     $fields = is_array(self::$ticket['fields'] ?? null) ? self::$ticket['fields'] : [];
-    self::ticketKeyLeaf()->instance()->setText(self::$ticketKey === '' ? 'Ticket' : self::$ticketKey);
+    self::title('ticket', 'ticket-key')->setText(self::$ticketKey === '' ? 'Ticket' : self::$ticketKey);
     self::input('ticket', 'ticket-summary')->setValue((string)($fields['summary'] ?? ''));
     self::editor('ticket', 'ticket-description')->setValue(self::media()->toText($fields['description'] ?? null));
     self::text('ticket', 'ticket-comments')->setText(self::$ticketKey === '' ? '' : self::ticketCommentsText());
@@ -3571,7 +3397,7 @@ class Controller {
 
   /** Find a table by XML id. */
   private static function table(string $screen, string $id): Table {
-    return self::$window->screen($screen)->widget($id) ?? self::$ticketCardWidgets[$id];
+    return self::$window->screen($screen)->widget($id);
   }
 
   /** Find a title by XML id. */
@@ -3585,11 +3411,11 @@ class Controller {
 
   /** Find a text widget by XML id. */
   private static function text(string $screen, string $id): Text {
-    return self::$window->screen($screen)->widget($id) ?? self::$ticketCardWidgets[$id];
+    return self::$window->screen($screen)->widget($id);
   }
 
-  /** Find an editor by XML id; closed ticket cards are outside the layout. */
+  /** Find an editor by XML id. */
   private static function editor(string $screen, string $id): TextEditor {
-    return self::$window->screen($screen)->widget($id) ?? ($screen === 'filters' ? self::$filterWidgets[$id] : self::$ticketCardWidgets[$id]);
+    return self::$window->screen($screen)->widget($id);
   }
 }

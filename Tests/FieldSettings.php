@@ -20,6 +20,16 @@ function settingsFieldCheck(bool $condition, string $message): void {
   }
 }
 
+/** Return the shown leaf of a widget, or null while it is hidden. */
+function settingsShownLeaf(SPTK\Core\Screen $screen, string $id): ?SPTK\Layout\LayoutLeaf {
+  foreach ($screen->layout->leaves() as $leaf) {
+    if ($leaf->instance()->id() === $id) {
+      return $leaf;
+    }
+  }
+  return null;
+}
+
 /** Serve field metadata without depending on a live Jira account. */
 final class SettingsFieldClient extends Client {
 
@@ -65,14 +75,15 @@ try {
   $screen->handleEvent((object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => ord('f'), 'mod' => 0, 'repeat' => false]]);
   $screen->handleEvent((object)['type' => SDL::SDL_EVENT_KEY_UP, 'key' => (object)['key' => ord('f'), 'mod' => 0, 'repeat' => false]]);
   $list = $screen->widget('settings-fields-list');
-  settingsFieldCheck($list instanceof ListView && $screen->widget('jira-site') === null, 'F should replace the connection controls with the field selector.');
-  $panelGrid = $screen->layout->findNode('settings-fields-panel')->grid();
+  settingsFieldCheck($list instanceof ListView && settingsShownLeaf($screen, 'jira-site') === null, 'F should replace the connection controls with the field selector.');
+  $screen->measureGrid(new SPTK\Layout\Tile(0, 0, $screen->layout->grid()->width, $screen->layout->grid()->height));
+  $panelGrid = settingsShownLeaf($screen, 'settings-fields-list')->grid();
   settingsFieldCheck($panelGrid->width === $leftGrid->width && $panelGrid->height === $leftGrid->height, 'The selector should occupy the whole Settings tile.');
   settingsFieldCheck($screen->activeLeaf()?->instance() === $list, 'The selector should be active on opening.');
   settingsFieldCheck($list->getValue() === FieldConfiguration::selected($saved), 'The selector should show the saved order and selection.');
   $list->setValue(['key']);
   $screen->handleEvent((object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_ESCAPE, 'mod' => 0, 'repeat' => false]]);
-  settingsFieldCheck($screen->widget('jira-site') !== null && $screen->widget('settings-fields-list') === null, 'Escape should restore the Settings controls.');
+  settingsFieldCheck(settingsShownLeaf($screen, 'jira-site') !== null && settingsShownLeaf($screen, 'settings-fields-list') === null, 'Escape should restore the Settings controls.');
   settingsFieldCheck($screen->selectedLeaf()?->instance() === $screen->widget('settings-fields'), 'Escape should select the Fields button.');
   settingsFieldCheck(Settings::load() === $saved, 'Escape should leave saved fields unchanged.');
   echo "Field Settings checks passed.\n";

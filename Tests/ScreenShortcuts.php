@@ -146,11 +146,19 @@ try {
   $window->handleEvent(shortcutKey(ord('r')));
   shortcutCheck($data->ticketLoads === 1, 'Typing R into the active ticket title must not refresh it.');
   $screens['ticket']->release('accept');
-  Controller::expandTicketCard(new EventContext('select', (new ReflectionProperty(Controller::class, 'ticketCardSummaries'))->getValue()['attachments']));
+  $screens['ticket']->openDeckTile('ticket-attachments-card');
   $attachmentLeaf = current(array_filter($screens['ticket']->layout->leaves(), static fn($leaf) => $leaf->instance() === $screens['ticket']->widget('ticket-attachments')));
   $screens['ticket']->activateLeaf($attachmentLeaf);
   $window->handleEvent(shortcutKey(ord('r')));
   shortcutCheck($data->ticketLoads === 2 && $data->searches === 1, 'R on an active ticket table must still reload only the current ticket.');
+  $screens['ticket']->release('accept');
+  $keyLeaf = shortcutLeaf($screens['ticket'], 'ticket-key');
+  $screens['ticket']->selectLeaf($keyLeaf);
+  $window->handleEvent(shortcutKey(SDL::KEY_RETURN));
+  $keyEditor = $screens['ticket']->activeLeaf()?->instance();
+  shortcutCheck($keyEditor === $screens['ticket']->widget('ticket-key-editor') && $keyEditor->getValue() === 'AP-1234', 'Return on the ticket key must open its editor in place of the title.');
+  $window->handleEvent(shortcutKey(SDL::KEY_ESCAPE));
+  shortcutCheck($screens['ticket']->selectedLeaf() === $keyLeaf && $data->ticketLoads === 2, 'Escape must bring the key title back without loading a ticket.');
   echo "Screen shortcut checks passed.\n";
 } finally {
   $window->close();

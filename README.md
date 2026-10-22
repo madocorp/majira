@@ -110,8 +110,11 @@ asks before removing one you own. **Ctrl+Return** saves a comment edit;
 Embedded attachments show as `<@file.txt>` lines in comments and the
 description. To embed one, write `<@1>` (its row in the attachment table) or
 `<@file.txt>` on its own line; images show as images, other files as cards.
-In the comment reader, **L** or **Ctrl+L** previews the attachment on the
-cursor's line; in the description, use **Ctrl+L**.
+In the comment reader, **L** or **Ctrl+L** opens the link on the cursor's line;
+in the description, use **Ctrl+L**. An attachment opens in the preview, a
+`<#KEY>` or a Jira browse URL opens its ticket in majira, and any other URL
+opens in the default browser. With several links on a line, the one under the
+cursor wins, otherwise the first.
 When a file has no known name yet, opening Description or Comments asks Jira
 for attachment ids once and caches them.
 

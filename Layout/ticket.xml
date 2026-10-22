@@ -6,36 +6,40 @@
   <Event type="keyDown" key="ctrl+c" action="MAJIRA\App\Controller::copyTicketUrl" />
   <Event type="keyDown" key="insert" action="MAJIRA\App\Controller::newComment" />
   <Event type="keyDown" key="insert" action="MAJIRA\App\Controller::newAttachment" />
-  <Event type="keyDown" key="l" action="MAJIRA\App\Controller::openCommentAttachment" />
-  <Event type="keyDown" key="ctrl+l" action="MAJIRA\App\Controller::openCommentAttachment" />
-  <Event type="keyDown" key="ctrl+l" action="MAJIRA\App\Controller::openDescriptionAttachment" />
+  <Event type="keyDown" key="l" action="MAJIRA\App\Controller::openCommentLink" />
+  <Event type="keyDown" key="ctrl+l" action="MAJIRA\App\Controller::openCommentLink" />
+  <Event type="keyDown" key="ctrl+l" action="MAJIRA\App\Controller::openDescriptionLink" />
   <Event type="keyDown" key="delete" action="MAJIRA\App\Controller::deleteSelectedComment" />
   <Event type="keyDown" key="delete" action="MAJIRA\App\Controller::deleteSelectedAttachment" />
+  <Event type="expand" action="MAJIRA\App\Controller::ticketCardOpened" />
   <Layout>
     <Layout direction="horizontal" height="1*">
       <Layout id="ticket-left" width="3*">
         <Input id="ticket-summary" tip="Ticket title; Return edits and Esc or Return saves." height="1"><Event type="deactivate" action="MAJIRA\App\Controller::saveSummary" /></Input>
         <Separator />
         <Layout id="ticket-deck" height="1*">
-          <Layout id="ticket-description-card" height="1*"><TextEditor id="ticket-description" title="Description" tip="Esc cancels edits; Ctrl+Return saves; Ctrl+L opens a linked attachment." textWrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="keyDown" key="escape" action="MAJIRA\App\Controller::cancelDescription" /><Event type="deactivate" action="MAJIRA\App\Controller::saveDescription" /></TextEditor></Layout>
+          <Layout id="ticket-description-card" height="2" deck="1*" summary="MAJIRA\App\Controller::ticketCardSummary"><TextEditor id="ticket-description" title="Description" tip="Esc cancels edits; Ctrl+Return saves; Ctrl+L opens the attachment, ticket, or URL on the line." textWrap="true" height="1*"><Event type="keyDown" key="escape" action="MAJIRA\App\Controller::cancelDescription" /><Event type="deactivate" action="MAJIRA\App\Controller::saveDescription" /></TextEditor></Layout>
           <Separator />
-          <Layout id="ticket-comments-card" height="1*">
-            <Text id="ticket-comments" title="Comments" tip="Return reads; Return again edits; L opens a linked attachment; Insert adds; Delete removes." wrap="true" height="1*"><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /></Text>
+          <Layout id="ticket-comments-card" height="2" deck="1*" summary="MAJIRA\App\Controller::ticketCardSummary">
+            <Text id="ticket-comments" title="Comments" tip="Return reads; Return again edits; L opens the attachment, ticket, or URL on the line; Insert adds; Delete removes." wrap="true" height="1*" />
+            <TextEditor id="ticket-comment-editor" overwrite="#ticket-comments" title="Comment" tip="Esc cancels; Ctrl+Return saves the comment." textWrap="true" height="1*"><Event type="keyDown" key="escape" action="MAJIRA\App\Controller::cancelCommentEdit" /><Event type="keyDown" key="ctrl+enter" action="MAJIRA\App\Controller::requestCommentSave" /><Event type="deactivate" action="MAJIRA\App\Controller::finishCommentEdit" /></TextEditor>
           </Layout>
           <Separator />
-          <Layout id="ticket-attachments-card" height="1*"><Table id="ticket-attachments" title="Attachments" tip="Return previews; Insert adds; Delete removes." rowCursor="true" height="1*"><Header><Field>Author</Field><Field>File</Field><Field>Size / created</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="accept" action="MAJIRA\App\Controller::openAttachmentPreview" /></Table></Layout>
+          <Layout id="ticket-attachments-card" height="2" deck="1*" summary="MAJIRA\App\Controller::ticketCardSummary"><Table id="ticket-attachments" title="Attachments" tip="Return previews; Insert adds; Delete removes." rowCursor="true" height="1*"><Header><Field>Author</Field><Field>File</Field><Field>Size / created</Field></Header><Event type="accept" action="MAJIRA\App\Controller::openAttachmentPreview" /></Table><FileSelector id="ticket-attachment-file" overwrite="#ticket-attachments" tip="Return opens a directory or uploads a file; Esc cancels." height="1*"><Event type="keyDown" key="enter" action="MAJIRA\App\Controller::acceptAttachmentFile" /><Event type="deactivate" action="MAJIRA\App\Controller::finishAttachmentSelect" /></FileSelector></Layout>
           <Separator />
-          <Layout id="ticket-related-card" height="1*"><Table id="ticket-related" title="Related tickets" rowCursor="true" height="1*"><Header><Field>Relation</Field><Field>Key</Field><Field>Summary</Field><Field>Status</Field></Header><Event type="select" action="MAJIRA\App\Controller::expandTicketCard" /><Event type="activate" action="MAJIRA\App\Controller::loadRelatedChildren" /><Event type="accept" action="MAJIRA\App\Controller::openRelatedTicket" /></Table></Layout>
+          <Layout id="ticket-related-card" height="2" deck="1*" summary="MAJIRA\App\Controller::ticketCardSummary"><Table id="ticket-related" title="Related tickets" rowCursor="true" height="1*"><Header><Field>Relation</Field><Field>Key</Field><Field>Summary</Field><Field>Status</Field></Header><Event type="activate" action="MAJIRA\App\Controller::loadRelatedChildren" /><Event type="accept" action="MAJIRA\App\Controller::openRelatedTicket" /></Table></Layout>
         </Layout>
       </Layout>
       <Separator />
       <Layout id="ticket-right" width="1*">
         <Title id="ticket-key" height="1">Ticket</Title>
+        <Input id="ticket-key-editor" overwrite="#ticket-key" tip="Type a ticket key; Return opens it, Esc cancels." height="1"><Event type="keyDown" key="enter" action="MAJIRA\App\Controller::requestTicketKeyOpen" /><Event type="deactivate" action="MAJIRA\App\Controller::finishTicketKeyEdit" /></Input>
         <Separator />
         <Layout id="ticket-properties-pane" height="1*" overflow="true">
           <Layout id="ticket-properties" height="auto"></Layout>
           <Empty height="1*" />
         </Layout>
+        <List id="ticket-history" overwrite="#ticket-properties-pane" title="History" filterable="false" searchable="false" tip="Up/Down previews tickets; Return opens one; Esc closes History." height="1*"><Event type="change" action="MAJIRA\App\Controller::previewTicketHistory" /><Event type="keyDown" key="enter" action="MAJIRA\App\Controller::acceptTicketHistory" /><Event type="keyDown" key="escape" action="MAJIRA\App\Controller::cancelTicketHistory" /><Event type="deactivate" action="MAJIRA\App\Controller::cancelTicketHistory" /></List>
         <Separator />
         <Layout id="ticket-actions" direction="horizontal" height="1">
           <Button id="ticket-create-button" label="Create" hotkey="c" action="MAJIRA\App\Controller::newTicket" width="1*" />

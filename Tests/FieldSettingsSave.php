@@ -140,7 +140,8 @@ namespace {
     fieldSaveCheck($screens[2]->widget('ticket-customfield_10000') !== null && $screens[2]->widget('ticket-summary') !== null, 'Ticket cards should follow the shared setting while retaining the title input.');
     fieldSaveCheck($screens[2]->layout->findNode('ticket-property-key') === null, 'Selected Key should not create a duplicate property card.');
     fieldSaveCheck($screens[2]->layout->findNode('ticket-property-summary') === null, 'Unselected property cards should be removed.');
-    fieldSaveCheck($screens[0]->widget('jira-site') !== null && $screens[0]->widget('settings-fields-list') === null, 'Saving should restore the connection controls.');
+    $shownIds = array_map(static fn($leaf): ?string => $leaf->instance()->id(), $screens[0]->layout->leaves());
+    fieldSaveCheck(in_array('jira-site', $shownIds, true) && !in_array('settings-fields-list', $shownIds, true), 'Saving should restore the connection controls.');
     $screens[0]->handleEvent((object)['type' => SDL::SDL_EVENT_KEY_DOWN, 'key' => (object)['key' => SDL::KEY_RETURN, 'mod' => 0, 'repeat' => false]]);
     fieldSaveCheck($screens[0]->selectedLeaf()?->instance() === $screens[0]->widget('settings-fields'), 'Saving should select the Fields button.');
     echo "Field Settings save checks passed.\n";

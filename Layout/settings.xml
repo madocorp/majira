@@ -16,6 +16,7 @@
           <Button id="settings-quit" label="Quit" hotkey="q" action="MAJIRA\App\Controller::quit" />
         </Layout>
       </Layout>
+      <List id="settings-fields-list" overwrite="#settings-left" title="Fields for List and Ticket" multiple="true" filterable="false" searchable="true" reorderable="true" tip="Space moves a field between selected and available groups; Shift+Up/Down reorders; Return saves; Esc cancels." width="48"><Event type="change" action="MAJIRA\App\Controller::fieldSelectionChanged" /><Event type="reorder" action="MAJIRA\App\Controller::fieldOrderChanged" /><Event type="keyDown" key="enter" action="MAJIRA\App\Controller::saveFieldSettings" /><Event type="keyDown" key="escape" action="MAJIRA\App\Controller::cancelFieldSettings" /><Event type="deactivate" action="MAJIRA\App\Controller::cancelFieldSettings" /></List>
       <Separator />
       <Layout id="settings-right" width="1*">
         <Text id="settings-about" title="About MaJira" height="6">MaJira is a tile based Jira Cloud browser built with SPTK. Browse cached tickets, search with filters or JQL, inspect a board, and open ticket details. Jira requests are shown in the status bar.</Text>

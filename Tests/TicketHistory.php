@@ -61,9 +61,8 @@ try {
   (new ReflectionProperty(Controller::class, 'window'))->setValue(null, $window);
   (new ReflectionProperty(Controller::class, 'data'))->setValue(null, new JiraData());
   (new ReflectionMethod(Controller::class, 'prepareTicketTiles'))->invoke(null);
-  $cardWidgets = (new ReflectionProperty(Controller::class, 'ticketCardWidgets'))->getValue();
-  foreach (['ticket-description' => ['# Heading', '#82b4d8'], 'ticket-comments' => ['**bold**', '#d2bf64']] as $id => [$value, $background]) {
-    $editor = $cardWidgets[$id];
+  foreach (['ticket-description' => ['# Heading', '#82b4d8'], 'ticket-comments' => ['**bold**', '#d2bf64'], 'ticket-comment-editor' => ['**bold**', '#d2bf64']] as $id => [$value, $background]) {
+    $editor = $screen->widget($id);
     if ($id === 'ticket-comments') {
       $editor->setText($value);
     } else {
@@ -75,7 +74,7 @@ try {
   }
   (new ReflectionMethod(Controller::class, 'restoreLastTicket'))->invoke(null);
   historyCheck($screen->widget('ticket-summary')->getValue() === 'First title', 'The latest ticket should load first.');
-  $comments = $cardWidgets['ticket-comments'];
+  $comments = $screen->widget('ticket-comments');
   historyCheck($comments->text() === ">>> Ada [2026-10-10 12:34:56]\n\nA comment", 'Comments should use the original highlighted header title.');
   $commentGrid = new Grid(42, 4);
   $comments->paint(new GridWriter($commentGrid, new Tile(0, 0, 42, 4)));
