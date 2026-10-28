@@ -47,7 +47,14 @@ repository; restore that permission with `chmod +x majira.php` if needed.
 
 ```sh
 majira
+majira AP-1234
+majira https://example.atlassian.net/browse/AP-1234
 ```
+
+A ticket key or a ticket URL of the configured Jira site opens that ticket.
+Only one MaJira runs at a time: when it is already running, a new start sends
+its argument to it, brings its window to the front, and exits. This lets you
+set MaJira as the handler for Jira links in your desktop.
 
 On first use, open **Settings** with **F5**. Enter the HTTPS Jira site URL,
 email address, and API token, then press **C** to verify and save the

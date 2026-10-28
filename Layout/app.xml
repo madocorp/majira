@@ -1,5 +1,6 @@
 <App>
   <Event type="init" action="MAJIRA\App\Controller::initialize" />
+  <Event type="timer" period="250" action="MAJIRA\App\Controller::receiveTargets" />
   <Window title="MaJira" width="132" height="54" mode="maximized" resizable="true" icon="../Assets/icon.png">
     <ScreenSelector screens="list, filters, board, ticket, settings" />
     <Screen id="list" title="List" file="list.xml" />

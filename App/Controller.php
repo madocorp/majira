@@ -156,6 +156,29 @@ class Controller {
       self::reportTicketCount();
     }
     self::restoreScreen();
+    Instance::listen();
+    self::openTarget(Instance::takeTarget());
+  }
+
+  /** Show the window and open the targets sent by later MaJira starts. */
+  public static function receiveTargets(EventContext $event): void {
+    foreach (Instance::receive() as $target) {
+      self::$window->raise();
+      self::openTarget($target);
+    }
+  }
+
+  /** Open a ticket from a key or a Jira ticket URL; an empty target does nothing. */
+  private static function openTarget(string $target): void {
+    if ($target === '') {
+      return;
+    }
+    $key = preg_match('~^[A-Z][A-Z0-9_]*-\d+$~i', $target) === 1 ? strtoupper($target) : self::ticketKeyFromUrl($target);
+    if ($key === null) {
+      self::status('Not a Jira ticket key or URL: ' . $target, true);
+      return;
+    }
+    self::openTicket($key);
   }
 
   /** Open the screen that was visible when the app was closed. */
